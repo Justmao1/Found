@@ -1,0 +1,23 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Local agent state, credentials and station-specific certificates
+.omx/
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.cer
+*.mobileprovision
+
+# Local screenshots, recordings and deployment diagnostics
+verification/*
+!verification/README.md
+!verification/home-brand-ipad.png

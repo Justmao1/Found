@@ -9,9 +9,11 @@ import SwiftUI
 
 @main
 struct Lost_FoundApp: App {
+    @State private var store = AppStore()
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(store)
         }
     }
 }
