@@ -631,6 +631,7 @@ private final class StoreHarness {
     private let host = "test-\(UUID().uuidString.lowercased()).invalid"
     private let defaults: UserDefaults
     private let session: URLSession
+    private let journal = FileManager.default.temporaryDirectory.appendingPathComponent("FoundLockerTest-\(UUID().uuidString)/pending.json")
 
     init() {
         defaults = UserDefaults(suiteName: suite)!
@@ -638,7 +639,7 @@ private final class StoreHarness {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         session = URLSession(configuration: configuration)
-        store = AppStore(defaults: defaults, session: session)
+        store = AppStore(defaults: defaults, session: session, lockerJournalURL: journal)
     }
 
     func handle(_ handler: @escaping (StubURLProtocol) -> Void) {
@@ -652,10 +653,18 @@ private final class StoreHarness {
         }
     }
 
+    func relaunch() -> AppStore { AppStore(defaults: defaults, session: session, lockerJournalURL: journal) }
+
+    func blockLockerJournal() throws {
+        // A file where the journal directory belongs simulates unavailable durable storage.
+        try Data([0]).write(to: journal.deletingLastPathComponent())
+    }
+
     func close() {
         session.invalidateAndCancel()
         StubURLProtocol.unregister(host: host)
         defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: journal.deletingLastPathComponent())
     }
 }
 
@@ -718,5 +727,375 @@ private func readBody(_ request: URLRequest) throws -> Data {
         if count < 0 { throw stream.streamError ?? URLError(.cannotDecodeContentData) }
         if count == 0 { return result }
         result.append(buffer, count: count)
+    }
+}
+
+@MainActor
+final class LockerStoreTests: XCTestCase {
+    private let itemID = "b24db87d-b0a7-4aa8-b447-7ba963a2b4dc"
+
+    private func item(status: String = "recorded", tagged: Bool = true) -> FoundItem {
+        FoundItem(id: itemID, createdAt: "2026-10-22T08:00:00Z", note: "Bottle",
+                  imageURL: "/images/\(itemID)", status: status,
+                  recognition: tagged ? Recognition(tags: ["Water bottle", "Blue"]) : nil,
+                  recognitionStatus: tagged ? "complete" : "processing",
+                  compartmentID: status == "recorded" ? nil : "01")
+    }
+
+    private func status(first: LockerCompartment? = nil, operations: [LockerOperation] = []) -> LockerStatusResponse {
+        LockerStatusResponse(enabled: true, driver: "simulated",
+                             compartments: ["01", "02", "03", "04"].map {
+                                 $0 == "01" ? first ?? LockerCompartment(id: $0, state: "free")
+                                     : LockerCompartment(id: $0, state: "free")
+                             }, operations: operations)
+    }
+
+    private func response(for command: LockerOperationRequest, state: String = "awaiting_confirmation") -> LockerOperationResponse {
+        let storedStatus = command.kind == "deposit" ? "stored" : "collected"
+        let pendingStatus = command.kind == "deposit" ? "deposit_pending" : "retrieval_pending"
+        return LockerOperationResponse(
+            operation: LockerOperation(id: command.requestID, kind: command.kind, itemID: command.itemID,
+                                       compartmentID: "01", state: state),
+            item: item(status: state == "completed" ? storedStatus : pendingStatus))
+    }
+
+    func testDepositWaitsForRecognitionAndDuplicateCallsCannotOpenAgain() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let saved = item()
+        let lockerStatus = status()
+        let bodies = LockedValue<[Data]>([])
+        let operation = LockedValue<LockerOperationRequest?>(nil)
+        let responseBuilder: (LockerOperationRequest, String) -> LockerOperationResponse = { [self] command, state in
+            response(for: command, state: state)
+        }
+        harness.respond { request in
+            switch (request.httpMethod!, request.url!.path) {
+            case ("GET", "/api/lockers"):
+                return .json(body: try JSONEncoder().encode(lockerStatus))
+            case ("POST", "/api/items"):
+                return .json(body: try JSONEncoder().encode(SaveItemResponse(item: saved, duplicate: false)))
+            case ("POST", "/api/locker-operations"):
+                let data = try readBody(request)
+                bodies.modify { $0.append(data) }
+                let command = try JSONDecoder().decode(LockerOperationRequest.self, from: data)
+                operation.modify { $0 = command }
+                return .json(body: try JSONEncoder().encode(responseBuilder(command, "awaiting_confirmation")))
+            default:
+                if request.url!.path.hasSuffix("/complete") {
+                    return .json(body: try JSONEncoder().encode(responseBuilder(operation.value!, "completed")))
+                }
+                return .json(body: try JSONEncoder().encode(ItemListResponse(items: [], total: 0)))
+            }
+        }
+        await harness.store.refreshLockers()
+        XCTAssertTrue(harness.store.beginVisitorTask(.report))
+        harness.store.setPhoto(Data([1]))
+        await harness.store.savePhoto()
+        await harness.store.beginDeposit(for: item(tagged: false))
+        XCTAssertTrue(bodies.value.isEmpty)
+        await harness.store.beginDeposit(for: saved)
+        await harness.store.beginDeposit(for: saved)
+        XCTAssertEqual(bodies.value.count, 1)
+        XCTAssertTrue(harness.store.hasPendingLocker)
+        XCTAssertEqual(harness.store.lockerOperation?.compartmentID, "01")
+        await harness.store.completeLockerOperation()
+        XCTAssertFalse(harness.store.hasPendingLocker)
+        XCTAssertEqual(harness.store.lastSaved?.status, "stored")
+        XCTAssertEqual(harness.store.lockerOperation?.state, "completed")
+        XCTAssertEqual(bodies.value.count, 1, "Confirmation must not open the door again")
+    }
+
+    func testLostResponsePersistsRequestAcrossRelaunchAndStatusRecoveryNeverPosts() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let saved = item(status: "stored")
+        let lockerStatus = status()
+        let command = LockedValue<LockerOperationRequest?>(nil)
+        let posts = LockedValue(0)
+        harness.respond { request in
+            if request.url!.path == "/api/lockers" { return .json(body: try JSONEncoder().encode(lockerStatus)) }
+            if request.url!.path == "/api/locker-operations" {
+                posts.modify { $0 += 1 }
+                command.modify { $0 = try? JSONDecoder().decode(LockerOperationRequest.self, from: readBody(request)) }
+                return .failure(URLError(.timedOut))
+            }
+            return .json(body: try JSONEncoder().encode(ItemListResponse(items: [saved], total: 1)))
+        }
+        await harness.store.refreshLockers()
+        await harness.store.beginRetrieval(for: saved)
+        XCTAssertTrue(harness.store.hasPendingLocker)
+        XCTAssertTrue(harness.store.endVisitorSession())
+        XCTAssertNil(harness.store.lockerItem)
+        XCTAssertNil(harness.store.lockerOperation)
+        XCTAssertTrue(harness.store.lockerNeedsStaff)
+        let restored = harness.relaunch()
+        XCTAssertTrue(restored.hasPendingLocker)
+        XCTAssertTrue(restored.lockerNeedsStaff)
+        XCTAssertNil(restored.lockerItem)
+        XCTAssertThrowsError(try restored.changeServer(to: "https://new.invalid"))
+        let expected = response(for: try XCTUnwrap(command.value))
+        harness.respond { request in
+            if request.httpMethod == "POST" { posts.modify { $0 += 1 } }
+            if request.url!.path == "/api/lockers" { return .json(body: try JSONEncoder().encode(lockerStatus)) }
+            if request.url!.path.hasPrefix("/api/locker-operations/") { return .json(body: try JSONEncoder().encode(expected)) }
+            return .json(body: try JSONEncoder().encode(ItemListResponse(items: [], total: 0)))
+        }
+        await restored.refreshLockerOperation()
+        XCTAssertEqual(restored.lockerOperation?.id, command.value?.requestID)
+        XCTAssertTrue(restored.hasPendingLocker)
+        await restored.completeLockerOperation()
+        XCTAssertEqual(posts.value, 1, "A restored staff-held operation cannot auto-confirm or re-open")
+    }
+
+    func testBusyLockerRequestBlocksSessionResetAndConcurrentOpen() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let saved = item(status: "stored")
+        let lockerStatus = status()
+        harness.respond { _ in .json(body: try JSONEncoder().encode(lockerStatus)) }
+        // Supply the two endpoints used by refreshLockers.
+        harness.respond { request in
+            request.url!.path == "/api/lockers"
+                ? .json(body: try JSONEncoder().encode(lockerStatus))
+                : .json(body: try JSONEncoder().encode(ItemListResponse(items: [saved], total: 1)))
+        }
+        await harness.store.refreshLockers()
+        let started = expectation(description: "Door request reached transport")
+        let pending = LockedValue<StubURLProtocol?>(nil)
+        harness.handle { transport in
+            if transport.request.url!.path == "/api/locker-operations" {
+                pending.modify { $0 = transport }; started.fulfill()
+            } else if transport.request.url!.path == "/api/lockers" {
+                transport.complete(.json(body: try! JSONEncoder().encode(lockerStatus)))
+            } else {
+                transport.complete(.json(body: try! JSONEncoder().encode(ItemListResponse(items: [], total: 0))))
+            }
+        }
+        XCTAssertTrue(harness.store.beginVisitorTask(.find))
+        let task = Task { await harness.store.beginRetrieval(for: saved) }
+        await fulfillment(of: [started], timeout: 3)
+        XCTAssertTrue(harness.store.isLockerBusy)
+        XCTAssertFalse(harness.store.endVisitorSession())
+        XCTAssertFalse(harness.store.beginVisitorTask(.report))
+        await harness.store.beginRetrieval(for: saved)
+        let transport = try XCTUnwrap(pending.value)
+        let command = try JSONDecoder().decode(LockerOperationRequest.self, from: readBody(transport.request))
+        transport.complete(.json(body: try JSONEncoder().encode(response(for: command))))
+        await task.value
+        XCTAssertFalse(harness.store.isLockerBusy)
+        XCTAssertTrue(harness.store.endVisitorSession())
+        XCTAssertTrue(harness.store.lockerNeedsStaff)
+    }
+
+    func testDefinitiveRejectionDoesNotLeaveAnUnrecoverablePendingRequest() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let lockerStatus = status()
+        harness.respond { request in
+            if request.url!.path == "/api/lockers" { return .json(body: try JSONEncoder().encode(lockerStatus)) }
+            if request.httpMethod == "POST" { return .json(status: 409, body: Data("{\"error\":\"Item is no longer available\"}".utf8)) }
+            return .json(body: try JSONEncoder().encode(ItemListResponse(items: [], total: 0)))
+        }
+        await harness.store.refreshLockers()
+        await harness.store.beginRetrieval(for: item(status: "stored"))
+        XCTAssertFalse(harness.store.hasPendingLocker)
+        XCTAssertEqual(harness.store.lockerError, "Item is no longer available")
+        XCTAssertFalse(harness.relaunch().hasPendingLocker)
+    }
+
+    func testOldReportCannotAllocateAfterVisitorEnds() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let calls = LockedValue(0)
+        harness.respond { _ in calls.modify { $0 += 1 }; return .failure(URLError(.timedOut)) }
+        XCTAssertTrue(harness.store.beginVisitorTask(.report))
+        XCTAssertTrue(harness.store.endVisitorSession())
+        await harness.store.beginDeposit(for: item())
+        XCTAssertEqual(calls.value, 0)
+        XCTAssertFalse(harness.store.hasPendingLocker)
+    }
+
+    func testJournalFailurePreventsAnyDoorRequest() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let lockerStatus = status()
+        let posts = LockedValue(0)
+        harness.respond { request in
+            if request.httpMethod == "POST" { posts.modify { $0 += 1 } }
+            if request.url!.path == "/api/lockers" {
+                return .json(body: try JSONEncoder().encode(lockerStatus))
+            }
+            return .json(body: try JSONEncoder().encode(ItemListResponse(items: [], total: 0)))
+        }
+        await harness.store.refreshLockers()
+        try harness.blockLockerJournal()
+
+        await harness.store.beginRetrieval(for: item(status: "stored"))
+
+        XCTAssertEqual(posts.value, 0)
+        XCTAssertFalse(harness.store.hasPendingLocker)
+        XCTAssertFalse(harness.store.isLockerBusy)
+        XCTAssertNotNil(harness.store.lockerError)
+    }
+
+    func testInventoryRefreshFailureClearsStaleLockerAvailability() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let lockerStatus = status()
+        let saved = item(status: "stored")
+        harness.respond { request in
+            if request.url!.path == "/api/lockers" {
+                return .json(body: try JSONEncoder().encode(lockerStatus))
+            }
+            return .json(body: try JSONEncoder().encode(ItemListResponse(items: [saved], total: 1)))
+        }
+        await harness.store.refreshLockers()
+        XCTAssertEqual(harness.store.availableItems.count, 1)
+        harness.respond { _ in .failure(URLError(.notConnectedToInternet)) }
+
+        await harness.store.refresh()
+
+        XCTAssertNil(harness.store.lockerStatus)
+        XCTAssertTrue(harness.store.availableItems.isEmpty)
+    }
+
+    func testAssignedCompartmentSurvivesCanceledFollowupAndOlderRefresh() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let saved = item()
+        let free = status()
+        let empty = ItemListResponse(items: [], total: 0)
+        harness.respond { request in
+            if request.url!.path == "/api/lockers" { return .json(body: try JSONEncoder().encode(free)) }
+            if request.httpMethod == "POST" {
+                return .json(body: try JSONEncoder().encode(SaveItemResponse(item: saved, duplicate: false)))
+            }
+            return .json(body: try JSONEncoder().encode(empty))
+        }
+        await harness.store.refreshLockers()
+        XCTAssertTrue(harness.store.beginVisitorTask(.report))
+        harness.store.setPhoto(Data([1]))
+        await harness.store.savePhoto()
+        let earlierStarted = expectation(description: "Older status request started")
+        let followupStarted = expectation(description: "Post-deposit status request started")
+        let earlier = LockedValue<StubURLProtocol?>(nil)
+        let count = LockedValue(0)
+        let buildResponse: (LockerOperationRequest) -> LockerOperationResponse = { [self] in response(for: $0) }
+        harness.handle { transport in
+            if transport.request.url!.path == "/api/lockers" {
+                if count.modify({ $0 += 1; return $0 }) == 1 {
+                    earlier.modify { $0 = transport }; earlierStarted.fulfill()
+                } else { followupStarted.fulfill() }
+            } else if transport.request.url!.path == "/api/locker-operations" {
+                let command = try! JSONDecoder().decode(LockerOperationRequest.self, from: readBody(transport.request))
+                transport.complete(.json(body: try! JSONEncoder().encode(buildResponse(command))))
+            } else { transport.complete(.json(body: try! JSONEncoder().encode(empty))) }
+        }
+        let oldRefresh = Task { await harness.store.refreshLockers() }
+        await fulfillment(of: [earlierStarted], timeout: 3)
+        let deposit = Task { await harness.store.beginDeposit(for: saved) }
+        await fulfillment(of: [followupStarted], timeout: 3)
+        XCTAssertEqual(harness.store.lockerStatus?.compartments.first?.state, "reserved")
+        XCTAssertEqual(harness.store.lockerStatus?.compartments.first?.itemID, saved.id)
+        XCTAssertEqual(harness.store.lockerStatus?.operations.first?.state, "awaiting_confirmation")
+        deposit.cancel()
+        await deposit.value
+        try XCTUnwrap(earlier.value).complete(.json(body: JSONEncoder().encode(free)))
+        await oldRefresh.value
+        XCTAssertTrue(harness.store.endVisitorSession())
+        XCTAssertEqual(harness.store.selectedTab, .home)
+        XCTAssertEqual(harness.store.lockerStatus?.compartments.filter { $0.state == "free" }.count, 3)
+        XCTAssertEqual(harness.store.lockerStatus?.compartments.first?.state, "reserved")
+    }
+
+    func testFreshStatusPublishesBeforeCanceledAvailableItemList() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let saved = item(status: "stored")
+        let occupied = status(first: LockerCompartment(id: "01", state: "occupied", itemID: saved.id))
+        harness.respond { request in
+            request.url!.path == "/api/lockers"
+                ? .json(body: try JSONEncoder().encode(occupied))
+                : .json(body: try JSONEncoder().encode(ItemListResponse(items: [saved], total: 1)))
+        }
+        await harness.store.refreshLockers()
+        XCTAssertEqual(harness.store.storedItems.count, 1)
+        let retrieving = status(first: LockerCompartment(id: "01", state: "retrieving", itemID: saved.id))
+        let listStarted = expectation(description: "Secondary list request started")
+        harness.handle { transport in
+            if transport.request.url!.path == "/api/lockers" {
+                transport.complete(.json(body: try! JSONEncoder().encode(retrieving)))
+            } else { listStarted.fulfill() }
+        }
+        let refresh = Task { await harness.store.refreshLockers() }
+        await fulfillment(of: [listStarted], timeout: 3)
+        XCTAssertEqual(harness.store.lockerStatus?.compartments.first?.state, "retrieving")
+        XCTAssertTrue(harness.store.storedItems.isEmpty)
+        refresh.cancel()
+        await refresh.value
+        XCTAssertEqual(harness.store.lockerStatus?.compartments.first?.state, "retrieving")
+        XCTAssertTrue(harness.store.availableItems.isEmpty)
+    }
+
+    func testOldCompletedReplayCannotReleaseAnotherItemsCompartment() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let newOwner = "1ddf0bbc-a7de-4ad5-a4ad-e1e6f2ed7a2f"
+        let occupied = status(first: LockerCompartment(id: "01", state: "occupied", itemID: newOwner))
+        harness.respond { request in
+            request.url!.path == "/api/lockers"
+                ? .json(body: try JSONEncoder().encode(occupied))
+                : .json(body: try JSONEncoder().encode(ItemListResponse(items: [], total: 0)))
+        }
+        await harness.store.refreshLockers()
+        let historical = LockerOperation(id: UUID().uuidString.lowercased(), kind: "retrieve", itemID: itemID,
+                                         compartmentID: "01", state: "completed")
+        let collected = FoundItem(id: itemID, createdAt: "", note: "", imageURL: "", status: "collected")
+        let reply = LockerOperationResponse(operation: historical, item: collected)
+        let followup = expectation(description: "Historical replay follow-up started")
+        harness.handle { transport in
+            if transport.request.httpMethod == "POST" {
+                transport.complete(.json(body: try! JSONEncoder().encode(reply)))
+            } else { followup.fulfill() }
+        }
+        let resolve = Task { await harness.store.resolveLockerOperation(historical, outcome: "collected") }
+        await fulfillment(of: [followup], timeout: 3)
+        XCTAssertEqual(harness.store.lockerStatus?.compartments.first?.state, "occupied")
+        XCTAssertEqual(harness.store.lockerStatus?.compartments.first?.itemID, newOwner)
+        resolve.cancel()
+        await resolve.value
+        XCTAssertEqual(harness.store.lockerStatus?.compartments.first?.itemID, newOwner)
+    }
+
+    func testCollectionResponseReleasesItsOwnCompartmentBeforeFollowup() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let operation = LockerOperation(id: UUID().uuidString.lowercased(), kind: "retrieve", itemID: itemID,
+                                        compartmentID: "01", state: "awaiting_confirmation")
+        let retrieving = status(first: LockerCompartment(id: "01", state: "retrieving", itemID: itemID), operations: [operation])
+        harness.respond { request in
+            request.url!.path == "/api/lockers"
+                ? .json(body: try JSONEncoder().encode(retrieving))
+                : .json(body: try JSONEncoder().encode(ItemListResponse(items: [], total: 0)))
+        }
+        await harness.store.refreshLockers()
+        let completed = LockerOperation(id: operation.id, kind: "retrieve", itemID: itemID,
+                                        compartmentID: "01", state: "completed")
+        let collected = FoundItem(id: itemID, createdAt: "", note: "", imageURL: "", status: "collected")
+        let reply = LockerOperationResponse(operation: completed, item: collected)
+        let followup = expectation(description: "Collection follow-up started")
+        harness.handle { transport in
+            if transport.request.httpMethod == "POST" {
+                transport.complete(.json(body: try! JSONEncoder().encode(reply)))
+            } else { followup.fulfill() }
+        }
+        let resolve = Task { await harness.store.resolveLockerOperation(operation, outcome: "collected") }
+        await fulfillment(of: [followup], timeout: 3)
+        XCTAssertEqual(harness.store.lockerStatus?.compartments.first?.state, "free")
+        XCTAssertNil(harness.store.lockerStatus?.compartments.first?.itemID)
+        XCTAssertTrue(harness.store.lockerStatus?.operations.isEmpty == true)
+        resolve.cancel()
+        await resolve.value
     }
 }

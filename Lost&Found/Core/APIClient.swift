@@ -28,12 +28,39 @@ public struct APIClient: Sendable {
         self.session = session
     }
 
-    public func items() async throws -> ItemListResponse {
-        try await get("api/items")
+    public func items(availableOnly: Bool = false) async throws -> ItemListResponse {
+        try await get("api/items", queryItems: availableOnly ? [URLQueryItem(name: "available", value: "1")] : [])
     }
 
     public func aiStatus() async throws -> AIStatus {
         try await get("api/ai/status")
+    }
+
+    public func lockers() async throws -> LockerStatusResponse {
+        try await get("api/lockers")
+    }
+
+    public func beginLockerOperation(_ request: LockerOperationRequest) async throws -> LockerOperationResponse {
+        try await post("api/locker-operations", payload: request)
+    }
+
+    public func lockerOperation(id: String) async throws -> LockerOperationResponse {
+        try await get(lockerPath(id))
+    }
+
+    public func completeLockerOperation(id: String) async throws -> LockerOperationResponse {
+        try await post(lockerPath(id) + "/complete", payload: EmptyRequest())
+    }
+
+    public func resolveLockerOperation(id: String, outcome: String) async throws -> LockerOperationResponse {
+        try await post(lockerPath(id) + "/resolve", payload: LockerResolution(outcome: outcome))
+    }
+
+    private func lockerPath(_ id: String) throws -> String {
+        guard let uuid = UUID(uuidString: id) else {
+            throw APIError.server(statusCode: 404, message: "Locker operation not found")
+        }
+        return "api/locker-operations/" + uuid.uuidString.lowercased()
     }
 
     public func health() async throws {
@@ -84,8 +111,11 @@ public struct APIClient: Sendable {
         url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80)
     }
 
-    private func get<Response: Decodable>(_ path: String) async throws -> Response {
-        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+    private func get<Response: Decodable>(_ path: String, queryItems: [URLQueryItem] = []) async throws -> Response {
+        var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        if !queryItems.isEmpty { components.queryItems = queryItems }
+        guard let url = components.url else { throw APIError.invalidResponse }
+        var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 20
         return try await execute(request)
@@ -161,6 +191,8 @@ private struct SearchRequest: Encodable {
 }
 
 private struct EmptyRequest: Encodable {}
+
+private struct LockerResolution: Encodable { let outcome: String }
 
 private struct TranscriptionRequest: Encodable {
     let audio: String

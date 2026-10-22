@@ -16,13 +16,14 @@ import sqlite3
 import ssl
 import struct
 import threading
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 import uuid
 import zlib
 
 import vision
 import search
 import speech
+import lockers
 
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
@@ -122,14 +123,16 @@ def item_json(row):
     elif not state or state == "complete":
         state = "disabled" if not vision.configuration_status()["configured"] else "failed"
     return {"id": row["id"], "created_at": row["created_at"], "note": row["note"],
-            "image_url": "/images/" + row["id"], "status": "recorded",
+            "image_url": "/images/" + row["id"],
+            "status": (row["storage_status"] or "recorded") if "storage_status" in row.keys() else "recorded",
+            "compartment_id": row["compartment_id"] if "compartment_id" in row.keys() else None,
             "recognition": recognition, "recognition_status": state}
 
 
 class PhotoServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, data_dir, auto_recognize=True):
+    def __init__(self, address, data_dir, auto_recognize=True, locker_driver=None):
         directory = Path(data_dir)
         directory.mkdir(parents=True, exist_ok=True)
         self.db_path = directory / "items.sqlite3"
@@ -160,6 +163,7 @@ class PhotoServer(ThreadingHTTPServer):
             db.commit()
         finally:
             db.close()
+        self.lockers = lockers.LockerStore(self.connect_db, directory, locker_driver)
         super().__init__(address, PhotoHandler)
         self.ai_worker = threading.Thread(target=self._recognition_worker, daemon=True,
                                           name="lost-found-recognition")
@@ -185,14 +189,27 @@ class PhotoServer(ThreadingHTTPServer):
     def connect_db(self):
         db = sqlite3.connect(self.db_path, timeout=15)
         db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
         return db
 
     def fetch_item(self, db, identifier):
         return db.execute("""SELECT items.*, recognitions.result AS recognition,
+            item_storage.status AS storage_status, item_storage.compartment_id,
             recognition_jobs.state AS recognition_state FROM items
             LEFT JOIN recognitions ON recognitions.item_id = items.id
             LEFT JOIN recognition_jobs ON recognition_jobs.item_id = items.id
+            LEFT JOIN item_storage ON item_storage.item_id = items.id
             WHERE items.id = ?""", (identifier,)).fetchone()
+
+    def operation_response(self, operation):
+        db = self.connect_db()
+        try:
+            db.execute("BEGIN")
+            current = db.execute("SELECT * FROM locker_operations WHERE id=?", (operation["id"],)).fetchone()
+            return {"operation": lockers.operation_json(current),
+                    "item": item_json(self.fetch_item(db, current["item_id"]))}
+        finally:
+            db.close()
 
     def search_items(self, query):
         if not self.search_slot.acquire(blocking=False):
@@ -202,9 +219,14 @@ class PhotoServer(ThreadingHTTPServer):
             db = self.connect_db()
             try:
                 rows = db.execute("""SELECT items.id, created_at, note,
+                    item_storage.status AS storage_status,item_storage.compartment_id,
                     recognitions.result AS recognition FROM items
                     LEFT JOIN recognitions ON recognitions.item_id = items.id
-                    ORDER BY created_at DESC, items.rowid DESC""")
+                    LEFT JOIN item_storage ON item_storage.item_id = items.id
+                    LEFT JOIN compartments ON compartments.id = item_storage.compartment_id
+                    WHERE (? = 0 AND item_storage.item_id IS NULL) OR (item_storage.status='stored' AND compartments.state='occupied'
+                        AND compartments.item_id=items.id)
+                    ORDER BY created_at DESC, items.rowid DESC""", (int(self.lockers.enabled),))
                 for row in rows:
                     recognition = vision.cached_recognition(row["recognition"])
                     if recognition is None:
@@ -217,8 +239,25 @@ class PhotoServer(ThreadingHTTPServer):
             finally:
                 db.close()
             matches = search.find_matches(query, inventory) if inventory else []
-            return {"matches": [{"item": items[match["id"] - 1], "reason": match["reason"]}
-                                for match in matches],
+            candidates = [{"item": items[match["id"] - 1], "reason": match["reason"]} for match in matches]
+            if candidates:
+                # Cloud search may take seconds; an item can be collected meanwhile.
+                db = self.connect_db()
+                try:
+                    db.execute("BEGIN")
+                    current = []
+                    for candidate in candidates:
+                        row = self.fetch_item(db, candidate["item"]["id"])
+                        legacy = row is not None and row["storage_status"] is None and not self.lockers.enabled
+                        stored = row is not None and row["storage_status"] == "stored" and db.execute(
+                            "SELECT 1 FROM compartments WHERE id=? AND item_id=? AND state='occupied'",
+                            (row["compartment_id"], row["id"])).fetchone()
+                        if legacy or stored:
+                            current.append({"item": item_json(row), "reason": candidate["reason"]})
+                    candidates = current
+                finally:
+                    db.close()
+            return {"matches": candidates,
                     "searched_count": len(items), "pending_count": pending_count}
         finally:
             self.search_slot.release()
@@ -351,6 +390,8 @@ class PhotoHandler(BaseHTTPRequestHandler):
             self._get()
         except (BrokenPipeError, ConnectionResetError):
             pass
+        except vision.VisionError as error:
+            self._error(error.status, error.message)
         except (sqlite3.Error, OSError):
             logging.exception("读取失败")
             self._error(500, "Could not load data. Please retry later.")
@@ -364,15 +405,28 @@ class PhotoHandler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True})
         elif path == "/api/ai/status":
             self._send(200, vision.configuration_status())
+        elif path == "/api/lockers":
+            self._send(200, self.server.lockers.snapshot())
+        elif path.startswith("/api/locker-operations/"):
+            identifier = path[len("/api/locker-operations/"):]
+            self._send(200, self.server.operation_response(self.server.lockers.get(identifier)))
         elif path == "/api/items":
+            available = parse_qs(urlsplit(self.path).query).get("available") == ["1"]
+            condition = ("WHERE item_storage.status='stored' AND compartments.state='occupied' "
+                         "AND compartments.item_id=items.id") if available else ""
             db = self.server.connect_db()
             try:
                 rows = db.execute("""SELECT items.id, created_at, note, recognitions.result AS recognition,
-                    recognition_jobs.state AS recognition_state
+                    recognition_jobs.state AS recognition_state,
+                    item_storage.status AS storage_status,item_storage.compartment_id
                     FROM items LEFT JOIN recognitions ON recognitions.item_id = items.id
                     LEFT JOIN recognition_jobs ON recognition_jobs.item_id = items.id
-                    ORDER BY created_at DESC, items.rowid DESC LIMIT 100""").fetchall()
-                total = db.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+                    LEFT JOIN item_storage ON item_storage.item_id = items.id
+                    LEFT JOIN compartments ON compartments.id = item_storage.compartment_id
+                    """ + condition + " ORDER BY created_at DESC, items.rowid DESC LIMIT 100").fetchall()
+                total = db.execute("SELECT COUNT(*) FROM items "
+                                   "LEFT JOIN item_storage ON item_storage.item_id=items.id "
+                                   "LEFT JOIN compartments ON compartments.id=item_storage.compartment_id " + condition).fetchone()[0]
             finally:
                 db.close()
             self._send(200, {"items": [item_json(row) for row in rows], "total": total})
@@ -437,6 +491,7 @@ class PhotoHandler(BaseHTTPRequestHandler):
     def _post(self):
         path = self.path.partition("?")[0]
         identifier = None
+        locker_action = None
         if path.startswith("/api/items/") and path.endswith("/recognize"):
             identifier = path[len("/api/items/"):-len("/recognize")]
             try:
@@ -445,7 +500,13 @@ class PhotoHandler(BaseHTTPRequestHandler):
             except ValueError:
                 self._error(404, "Item not found")
                 return
-        elif path not in ("/api/items", "/api/search", "/api/transcribe"):
+        elif path.startswith("/api/locker-operations/"):
+            parts = path[len("/api/locker-operations/"):].split("/")
+            if len(parts) != 2 or parts[1] not in ("complete", "resolve"):
+                self._error(404, "Endpoint not found")
+                return
+            locker_action = (lockers.canonical_uuid(parts[0]), parts[1])
+        elif path not in ("/api/items", "/api/search", "/api/transcribe", "/api/locker-operations"):
             self._error(404, "Endpoint not found")
             return
         if self.headers.get("X-Requested-With") != "lost-found-box" or not self._same_origin():
@@ -459,6 +520,8 @@ class PhotoHandler(BaseHTTPRequestHandler):
             "/api/search": (MAX_SEARCH_BODY_BYTES, "Search request exceeds 16 KiB."),
             "/api/transcribe": (speech.MAX_BODY_BYTES, "Speech request exceeds 1.4 MB. Please record a shorter description."),
         }.get(path, (MAX_BODY_BYTES, "Upload too large. Please take another photo."))
+        if path.startswith("/api/locker-operations"):
+            body_limit, size_error = MAX_SEARCH_BODY_BYTES, "Locker request exceeds 16 KiB."
         if len(lengths[0]) > 12:
             self._error(413, size_error)
             return
@@ -480,6 +543,24 @@ class PhotoHandler(BaseHTTPRequestHandler):
             return
         if not isinstance(payload, dict):
             self._error(400, "Request must be a JSON object")
+            return
+        if path == "/api/locker-operations":
+            if set(payload) != {"request_id", "item_id", "kind"}:
+                self._error(400, "Provide request_id, item_id and kind.")
+                return
+            operation, duplicate = self.server.lockers.start(payload["request_id"], payload["item_id"], payload["kind"])
+            self._send(200 if duplicate else 201, self.server.operation_response(operation))
+            return
+        if locker_action is not None:
+            operation_id, action = locker_action
+            if (action == "complete" and payload) or (action == "resolve" and set(payload) != {"outcome"}):
+                self._error(400, "Complete accepts {}; resolve requires an outcome.")
+                return
+            if action == "resolve" and not isinstance(payload["outcome"], str):
+                self._error(400, "Resolution outcome must be text.")
+                return
+            operation = self.server.lockers.finish(operation_id, payload.get("outcome"))
+            self._send(200, self.server.operation_response(operation))
             return
         if path == "/api/transcribe":
             audio = speech.decode_audio(payload)
@@ -561,7 +642,8 @@ class PhotoHandler(BaseHTTPRequestHandler):
         self._send(200 if duplicate else 201, {"item": result, "duplicate": duplicate})
 
 
-def build_server(host, port, data_dir, cert=None, key=None, auto_recognize=True):
+def build_server(host, port, data_dir, cert=None, key=None, auto_recognize=True,
+                 locker_mode=None, locker_driver=None):
     if bool(cert) != bool(key):
         raise ValueError("--cert 和 --key 必须一起提供")
     try:
@@ -570,12 +652,15 @@ def build_server(host, port, data_dir, cert=None, key=None, auto_recognize=True)
         loopback = host.lower() == "localhost"
     if not cert and not loopback:
         raise ValueError("局域网访问需要 HTTPS，请同时提供 --cert 和 --key")
+    driver = locker_driver if locker_driver is not None else lockers.configured_driver(host, locker_mode)
+    if driver is not None and driver.name == "simulated" and not loopback:
+        raise ValueError("Simulated lockers may only listen on localhost.")
     context = None
     if cert:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(cert, key)
-    server = PhotoServer((host, port), data_dir, auto_recognize=auto_recognize)
+    server = PhotoServer((host, port), data_dir, auto_recognize=auto_recognize, locker_driver=driver)
     if context:
         server.socket = context.wrap_socket(server.socket, server_side=True)
     return server
@@ -588,9 +673,11 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent / "data")
     parser.add_argument("--cert")
     parser.add_argument("--key")
+    parser.add_argument("--locker-mode", choices=("disabled", "simulated", "gpio"),
+                        help="defaults to LOST_FOUND_LOCKER_MODE or disabled; simulation is localhost only")
     args = parser.parse_args()
     try:
-        server = build_server(args.host, args.port, args.data_dir, args.cert, args.key)
+        server = build_server(args.host, args.port, args.data_dir, args.cert, args.key, locker_mode=args.locker_mode)
     except (ValueError, OSError, ssl.SSLError) as error:
         parser.error(str(error))
     scheme = "https" if args.cert else "http"

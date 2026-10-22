@@ -4,6 +4,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=%h/lost-found-box
+EnvironmentFile=-%h/lost-found-box/config/lockers.env
 ExecStart=/usr/bin/python3 %h/lost-found-box/server.py --host 0.0.0.0 --port 8443 --cert %h/lost-found-box/certs/server.crt --key %h/lost-found-box/certs/server.key
 Restart=on-failure
 RestartSec=3

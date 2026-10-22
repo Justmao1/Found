@@ -14,18 +14,20 @@ struct EndVisitButton: View {
     @State private var confirming = false
     var body: some View {
         Button {
-            if store.photoData != nil && !store.reportNeedsStaff { confirming = true }
+            if store.hasPendingLocker || (store.photoData != nil && !store.reportNeedsStaff) { confirming = true }
             else { _ = store.endVisitorSession() }
         } label: {
             HStack(spacing: 6) { Image(systemName: "house"); Text("Finish") }
         }
-        .disabled(store.isSaving)
+        .disabled(store.isSaving || store.isLockerBusy)
         .accessibilityIdentifier("finishVisit")
         .confirmationDialog("Finish and return to the start?", isPresented: $confirming, titleVisibility: .visible) {
             Button("Finish Visit", role: .destructive) { _ = store.endVisitorSession() }
             Button("Keep Working", role: .cancel) {}
         } message: {
-            Text(store.submission == nil
+            Text(store.hasPendingLocker
+                 ? "This compartment will remain reserved for staff to check. Ending the visit does not confirm that an item was placed or collected."
+                 : store.submission == nil
                  ? "Your unsaved photo and note will be cleared from this shared screen."
                  : "Your report needs checking. It will be kept for staff to retry safely and hidden from the next visitor.")
         }

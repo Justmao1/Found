@@ -12,6 +12,10 @@ struct StaffAccessView: View {
     @State private var context = LAContext()
     @State private var authenticationAttempt = UUID()
     @State private var confirmingDiscard = false
+    @State private var reconciliation: LockerOperation?
+    @State private var resolutionOutcome = ""
+    @State private var confirmingReconciliation = false
+    @State private var confirmingRetry = false
 
     var body: some View {
         NavigationStack {
@@ -40,6 +44,7 @@ struct StaffAccessView: View {
                                 Button("Clear Local Pending Report", role: .destructive) { confirmingDiscard = true }
                             } footer: { Text("Clearing the local report does not remove an item already saved on the server.") }
                         }
+                        lockerRecovery
                         Section {
                             Label("Public station", systemImage: "ipad.landscape")
                             Text("Use Guided Access to keep this iPad in Found. Keep the device passcode and enrolled biometrics restricted to staff.")
@@ -73,9 +78,111 @@ struct StaffAccessView: View {
             if phase == .background { invalidateAuthentication() }
         }
         .confirmationDialog("Clear this pending report?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
-            Button("Clear Local Report", role: .destructive) { store.clearDraft() }
+            Button("Clear Local Report", role: .destructive) {
+                guard authenticated, scenePhase == .active else { return }
+                store.clearDraft()
+            }
             Button("Keep Report", role: .cancel) {}
         } message: { Text("Check saved items first. The server may already have received this report. Clearing it removes the safe retry copy from this device.") }
+        .confirmationDialog("Confirm the physical compartment check", isPresented: $confirmingReconciliation, titleVisibility: .visible) {
+            Button(resolutionTitle) {
+                guard authenticated, scenePhase == .active, let operation = reconciliation else { return }
+                let outcome = resolutionOutcome
+                let authorization = authenticationAttempt
+                let visitor = store.visitorRevision
+                let server = store.revision
+                Task {
+                    guard authenticated, authenticationAttempt == authorization, scenePhase == .active,
+                          store.visitorRevision == visitor, store.revision == server else { return }
+                    await store.resolveLockerOperation(operation, outcome: outcome)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Only continue after checking compartment \(reconciliation?.compartmentID ?? ""). \(resolutionExplanation) This updates the records without opening a door.")
+        }
+        .confirmationDialog("Retry the pending unlock request?", isPresented: $confirmingRetry, titleVisibility: .visible) {
+            Button("Retry the same request") {
+                guard authenticated, scenePhase == .active else { return }
+                let authorization = authenticationAttempt
+                let visitor = store.visitorRevision
+                let server = store.revision
+                Task {
+                    guard authenticated, authenticationAttempt == authorization, scenePhase == .active,
+                          store.visitorRevision == visitor, store.revision == server else { return }
+                    await store.retryLockerRequest()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Check the compartment and keep the area clear first. The original request ID will be reused. If the server has not received it, this may send an unlock pulse; an existing request will not open the door again.")
+        }
+    }
+
+    @ViewBuilder private var lockerRecovery: some View {
+        Section {
+            Button("Refresh compartment status", systemImage: "arrow.clockwise") {
+                Task { await store.refreshLockers() }
+            }.disabled(store.isLockerBusy)
+            if store.hasPendingLocker {
+                Text("This iPad has a pending compartment request. Check its server status before retrying or reconciling it.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                Button("Check pending request", systemImage: "magnifyingglass") {
+                    Task { await store.refreshLockerOperation() }
+                }.disabled(store.isLockerBusy)
+                Button("Retry the same request", systemImage: "arrow.clockwise.circle") {
+                    confirmingRetry = true
+                }.disabled(store.isLockerBusy)
+            }
+            ForEach(store.lockerStatus?.operations ?? [], id: \.id) { operation in
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Compartment \(operation.compartmentID)", systemImage: "lock.trianglebadge.exclamationmark")
+                        .font(.headline)
+                    Text(operation.kind == "deposit" ? "Unfinished storage" : "Unfinished collection")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    if let error = operation.error { Text(error).font(.footnote).foregroundStyle(.secondary) }
+                    if operation.state != "actuating" {
+                        Button(operation.kind == "deposit" ? "Item is inside · mark stored" : "Item was collected · mark collected") {
+                            prepareResolution(operation, outcome: operation.kind == "deposit" ? "stored" : "collected")
+                        }.disabled(store.isLockerBusy)
+                        Button(operation.kind == "deposit" ? "Compartment is empty · release it" : "Item is still inside · keep stored") {
+                            prepareResolution(operation, outcome: operation.kind == "deposit" ? "empty" : "stored")
+                        }.disabled(store.isLockerBusy)
+                    } else {
+                        Text("The unlock request is running. Refresh its status before making changes.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }.padding(.vertical, 8)
+            }
+            if let error = store.lockerError { Text(error).font(.footnote).foregroundStyle(.red) }
+        } header: {
+            Label("Compartment recovery", systemImage: "square.grid.2x2")
+        } footer: {
+            Text("Inspect the item and close the door before confirming. A compartment remains unavailable until the interrupted operation is resolved.")
+        }
+    }
+
+    private func prepareResolution(_ operation: LockerOperation, outcome: String) {
+        guard authenticated, scenePhase == .active else { return }
+        reconciliation = operation
+        resolutionOutcome = outcome
+        confirmingReconciliation = true
+    }
+
+    private var resolutionTitle: String {
+        switch resolutionOutcome {
+        case "stored": "Confirm item is stored"
+        case "collected": "Confirm item was collected"
+        default: "Confirm compartment is empty"
+        }
+    }
+
+    private var resolutionExplanation: String {
+        switch resolutionOutcome {
+        case "stored": "The item must be inside and the door closed."
+        case "collected": "The item must be removed and the door closed."
+        default: "The compartment must be empty and its door closed."
+        }
     }
 
     @MainActor private func authenticate() async {
@@ -107,5 +214,9 @@ struct StaffAccessView: View {
         context.invalidate()
         authenticating = false
         authenticated = false
+        confirmingDiscard = false
+        confirmingReconciliation = false
+        confirmingRetry = false
+        reconciliation = nil
     }
 }

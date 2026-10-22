@@ -19,14 +19,15 @@ struct FindView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     queryCard
                     NavigationLink { ItemsView() } label: {
-                        Label("Browse saved items", systemImage: "square.grid.2x2")
+                        Label("Browse stored items", systemImage: "square.grid.2x2")
                             .frame(maxWidth: .infinity, minHeight: 48)
                     }.buttonStyle(.bordered).buttonBorderShape(.capsule).accessibilityIdentifier("browseItems")
-                    Notice(text: "Compare the photo and details with campus staff before collecting an item.",
-                           symbol: "person.crop.circle.badge.checkmark")
+                    Notice(text: "Check the photo and details. Select your item to open its compartment, then confirm once you’ve collected it.",
+                           symbol: "lock.open")
                 }
             } trailing: {
                 VStack(alignment: .leading, spacing: 20) {
+                    LockerVisitRecoveryView()
                     if let error = store.searchError {
                         Notice(text: "\(error) Your description is still here; you can try again.", isError: true)
                     }
@@ -45,6 +46,10 @@ struct FindView: View {
                 }
                 .animation(reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.3), value: store.isSearching)
             }
+        }
+        .navigationDestination(for: SearchMatch.self) { match in
+            ItemDetailView(originalItem: match.item, matchReason: match.reason)
+                .modifier(ItemDetailTransition(id: match.item.id, namespace: itemTransition))
         }
         .modifier(VisitorNavigation())
         .navigationTitle("Find an item").navigationBarTitleDisplayMode(.inline)
@@ -236,18 +241,15 @@ struct FindView: View {
     private func results(_ result: SearchResponse) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             if result.matches.isEmpty {
-                ContentUnavailableView(result.searchedCount == 0 ? "No tagged items yet" : "No matches this time",
+                ContentUnavailableView(result.searchedCount == 0 ? "No stored items to search" : "No matches this time",
                                        systemImage: "magnifyingglass",
-                                       description: Text(result.searchedCount == 0 ? "Items need tags before they can be searched. Check back later." : "Try a different detail, or check back after more items are reported."))
+                                       description: Text(result.searchedCount == 0 ? "Items appear here after they have been identified and placed in a compartment." : "Try a different detail, or check back after more items are stored."))
                     .foundCard()
             } else {
                 Label("\(result.matches.count) possible \(result.matches.count == 1 ? "match" : "matches")", systemImage: "square.stack.3d.up")
                     .font(.title2.weight(.semibold))
                 ForEach(result.matches) { match in
-                    NavigationLink {
-                        ItemDetailView(originalItem: match.item, matchReason: match.reason)
-                            .modifier(ItemDetailTransition(id: match.item.id, namespace: itemTransition))
-                    } label: {
+                    NavigationLink(value: match) {
                         VStack(alignment: .leading, spacing: 14) {
                             ItemSummary(item: match.item, transitionNamespace: itemTransition)
                             Label(match.reason, systemImage: "sparkles")

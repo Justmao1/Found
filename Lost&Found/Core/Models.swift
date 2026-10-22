@@ -20,10 +20,11 @@ public struct FoundItem: Codable, Identifiable, Hashable, Sendable {
     public let status: String
     public let recognition: Recognition?
     public let recognitionStatus: String
+    public let compartmentID: String?
 
     public init(id: String, createdAt: String, note: String, imageURL: String,
                 status: String = "recorded", recognition: Recognition? = nil,
-                recognitionStatus: String = "disabled") {
+                recognitionStatus: String = "disabled", compartmentID: String? = nil) {
         self.id = id
         self.createdAt = createdAt
         self.note = note
@@ -31,6 +32,7 @@ public struct FoundItem: Codable, Identifiable, Hashable, Sendable {
         self.status = status
         self.recognition = recognition
         self.recognitionStatus = recognitionStatus
+        self.compartmentID = compartmentID
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -38,6 +40,7 @@ public struct FoundItem: Codable, Identifiable, Hashable, Sendable {
         case createdAt = "created_at"
         case imageURL = "image_url"
         case recognitionStatus = "recognition_status"
+        case compartmentID = "compartment_id"
     }
 }
 

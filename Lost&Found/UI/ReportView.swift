@@ -19,7 +19,7 @@ struct ReportView: View {
                         Text("Photograph the item")
                             .font(.largeTitle.weight(.semibold)).tracking(-0.8)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text("Place the item in view of this iPad’s camera. You can review the photo before saving.")
+                        Text("Photograph the item and review it. Once identified, the station will assign an available compartment.")
                             .font(.title3).foregroundStyle(.secondary)
                     }
                     VStack(alignment: .leading, spacing: 18) {
@@ -47,9 +47,9 @@ struct ReportView: View {
                         }
                     }
                     Label {
-                        Text("After registering, leave the item with staff at this station.")
+                        Text("Place the item in the numbered compartment, close its door, then confirm on this iPad.")
                     } icon: {
-                        Image(systemName: "person.crop.circle.badge.checkmark")
+                        Image(systemName: "tray.and.arrow.down.fill")
                             .foregroundStyle(FoundStyle.accent)
                     }
                     .font(.subheadline).foregroundStyle(.secondary)

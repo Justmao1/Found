@@ -52,9 +52,12 @@ struct ContentView: View {
         .onChange(of: store.isSaving) { _, saving in
             if !saving && scenePhase == .background { _ = store.endVisitorSession() }
         }
+        .onChange(of: store.isLockerBusy) { _, busy in
+            if !busy && scenePhase == .background { _ = store.endVisitorSession() }
+        }
         .onAppear { UIApplication.shared.isIdleTimerDisabled = scenePhase == .active }
         .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
-        .task(id: scenePhase) {
+        .task(id: "\(scenePhase)-\(store.revision)-\(store.visitorRevision)") {
             guard scenePhase == .active else { return }
             store.checkVisitorInactivity()
             await store.refresh()
@@ -70,12 +73,12 @@ struct ContentView: View {
                 }
             }
         }
-        .task(id: "\(scenePhase)-\(store.hasPendingItems)-\(store.revision)") {
-            guard scenePhase == .active, store.hasPendingItems else { return }
-            while !Task.isCancelled && store.hasPendingItems {
+        .task(id: "\(scenePhase)-\(store.revision)") {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
                 guard !Task.isCancelled else { return }
-                await store.refresh()
+                if store.hasPendingItems { await store.refresh() }
             }
         }
     }

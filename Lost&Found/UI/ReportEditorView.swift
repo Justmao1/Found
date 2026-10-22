@@ -3,13 +3,14 @@ import SwiftUI
 struct ReportEditorView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.staffToolsEnabled) private var staffToolsEnabled
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var photo: Data
     @State private var savedItem: FoundItem?
     @State private var photoSource: ReportPhotoSource?
     @State private var importing = false
-    @State private var confirmationAppeared = false
+    @State private var depositAttempted = false
     @FocusState private var editingNote: Bool
     @AccessibilityFocusState private var statusFocused: Bool
 
@@ -18,13 +19,21 @@ struct ReportEditorView: View {
     }
 
     private var locked: Bool { store.isSaving || store.submission != nil }
-    private var busy: Bool { store.isSaving || importing || photoSource != nil }
+    private var busy: Bool { store.isSaving || store.isLockerBusy || importing || photoSource != nil }
     private var stateAnimation: Animation {
         reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.36, dampingFraction: 0.9)
     }
     private var currentSavedItem: FoundItem? {
         guard let savedItem else { return nil }
+        if store.lockerItem?.id == savedItem.id, let item = store.lockerItem { return item }
         return store.items.first { $0.id == savedItem.id } ?? savedItem
+    }
+    private var operation: LockerOperation? {
+        guard !store.lockerNeedsStaff, store.lockerOperation?.itemID == savedItem?.id else { return nil }
+        return store.lockerOperation
+    }
+    private var allocationKey: String {
+        "\(savedItem?.id ?? "")-\(currentSavedItem?.recognitionStatus ?? "")-\(store.lockerStatus?.enabled == true)-\(scenePhase == .active)"
     }
 
     var body: some View {
@@ -36,7 +45,9 @@ struct ReportEditorView: View {
                 ScrollViewReader { scroll in
                     Form {
                         Section {
-                            photoPreview(height: min(320, max(180, geometry.size.height * 0.39)))
+                            photoPreview(height: currentSavedItem == nil
+                                         ? min(320, max(180, geometry.size.height * 0.39))
+                                         : min(150, max(120, geometry.size.height * 0.24)))
                                 .listRowInsets(EdgeInsets())
                                 .id("reportPhoto")
                         }
@@ -84,7 +95,7 @@ struct ReportEditorView: View {
                                     }
                                 }.padding(.vertical, 3)
                             } footer: {
-                                Text("Saving uploads this photo to your campus server. If AI tagging is enabled, it is also sent to Alibaba Bailian. You won’t need to wait for tags to finish.")
+                                Text("Your photo is sent to the station server and Alibaba Bailian for identification. Once identified, an available compartment will be assigned and unlocked.")
                             }
                         }
                     }
@@ -108,7 +119,7 @@ struct ReportEditorView: View {
                     }
                 }
             }
-            .navigationTitle(savedItem == nil ? "Review your photo" : "Item saved")
+            .navigationTitle(savedItem == nil ? "Review your photo" : operation?.state == "completed" ? "Item stored" : "Store your item")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if savedItem == nil {
@@ -117,7 +128,7 @@ struct ReportEditorView: View {
                     }
                 } else {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Finish") { _ = store.endVisitorSession() }.fontWeight(.semibold).accessibilityIdentifier("finishReport")
+                        EndVisitButton().disabled(busy)
                     }
                 }
                 ToolbarItemGroup(placement: .keyboard) {
@@ -127,9 +138,8 @@ struct ReportEditorView: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 10) {
-                    if currentSavedItem != nil {
-                        PrimaryAction(title: "Finish & Return Home", symbol: "house.fill") { _ = store.endVisitorSession() }
-                            .accessibilityIdentifier("finishSavedVisit")
+                    if let item = currentSavedItem {
+                        depositAction(item)
                     } else if store.isSaving {
                         HStack(spacing: 12) {
                             ProgressView().tint(FoundStyle.accent)
@@ -144,7 +154,7 @@ struct ReportEditorView: View {
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("saveItemProgress")
                     } else {
-                        PrimaryAction(title: store.submission == nil ? "Save Item" : "Retry Saving",
+                        PrimaryAction(title: store.submission == nil ? "Identify & Store Item" : "Retry Saving",
                                       symbol: store.submission == nil ? "checkmark" : "arrow.clockwise") {
                             editingNote = false
                             Task {
@@ -158,7 +168,7 @@ struct ReportEditorView: View {
                         .accessibilityIdentifier("saveItem")
                     }
                 }
-                .frame(minHeight: 64)
+                .frame(minHeight: currentSavedItem != nil ? 0 : 64)
                 .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
                 .background {
                     if reduceTransparency { FoundStyle.background }
@@ -171,7 +181,14 @@ struct ReportEditorView: View {
         .tint(FoundStyle.accent)
         .interactiveDismissDisabled(true)
         .modifier(VisitorSessionOverlay())
-        .sensoryFeedback(.success, trigger: savedItem?.id)
+        .task(id: allocationKey) {
+            guard let item = currentSavedItem, item.recognitionStatus == "complete",
+                  item.status == "recorded", !depositAttempted, scenePhase == .active,
+                  store.lockerStatus?.enabled == true, !store.lockerNeedsStaff,
+                  store.lastSaved?.id == item.id, store.selectedTab == .report else { return }
+            depositAttempted = true
+            await store.beginDeposit(for: item)
+        }
         .modifier(ReportPhotoAcquisition(source: $photoSource, importing: $importing) { data in
             guard store.acceptPhoto(data, visitorRevision: visitorRevision, serverRevision: serverRevision) else { return }
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { photo = data }
@@ -262,44 +279,59 @@ struct ReportEditorView: View {
         } header: {
             Label("Recognized tags", systemImage: "tag.fill")
         } footer: {
-            Text("AI-generated details help the owner find this item. You can finish whenever you’re ready.")
+            Text("AI-generated details help the owner find this item. Check them against the photo.")
         }
     }
 
     private func receipt(_ item: FoundItem) -> some View {
         Section {
-            HStack(alignment: .center, spacing: 16) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 44, weight: .regular))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(FoundStyle.accent)
-                    .symbolEffect(.bounce, value: confirmationAppeared)
-                    .symbolEffectsRemoved(reduceMotion)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("All set. Thank you.").font(.title2.weight(.semibold))
-                    Text("Your photo is safely in the station’s records.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
+            if let operation {
+                LockerOperationPanel(operation: operation, showsActions: false, compact: true)
+                    .padding(.vertical, 6)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Photo received", systemImage: "checkmark.circle.fill")
+                        .font(.headline).foregroundStyle(FoundStyle.accent)
+                    if store.isLockerBusy {
+                        ProgressView("Assigning your compartment…")
+                    } else if item.isPending {
+                        Text("Identifying the item before assigning a compartment.")
+                    } else if store.hasPendingLocker {
+                        Text("The compartment request needs checking. Keep your item with you until a compartment number is confirmed.")
+                    } else if store.lockerStatus?.enabled != true {
+                        Text("Storage is unavailable. Please keep the item with you and ask station staff for help.")
+                    } else if item.recognitionStatus != "complete" {
+                        Text("Identification needs another try before the item can be stored.")
+                    } else {
+                        Text("The station will assign one of compartments 01–04 for this item.")
+                    }
+                    if let error = store.lockerError { Notice(text: error, isError: true) }
+                }.padding(.vertical, 8).accessibilityFocused($statusFocused)
             }
-            .padding(.vertical, 12)
-            .accessibilityIdentifier("saveConfirmation")
-            .accessibilityElement(children: .combine)
-            .accessibilityFocused($statusFocused)
-            .onAppear { confirmationAppeared = true }
-            Label {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Leave the item with staff").font(.headline)
-                    Text("They’ll help it get back to its owner.").font(.subheadline).foregroundStyle(.secondary)
-                }
-            } icon: {
-                Image(systemName: "person.crop.circle.badge.checkmark")
-                    .font(.title3).foregroundStyle(FoundStyle.accent)
-            }
-            .padding(.vertical, 6)
             if !item.note.isEmpty { Text(item.note).font(.subheadline).foregroundStyle(.secondary) }
         } footer: {
-            Text("Finish clears this screen for the next visitor. Your saved report stays in the station’s records.")
+            Text("The item is available for collection only after you confirm that it is inside and the door is closed.")
+        }
+    }
+
+    @ViewBuilder private func depositAction(_ item: FoundItem) -> some View {
+        if let operation {
+            LockerOperationAction(operation: operation)
+        } else {
+            if store.isLockerBusy {
+                ProgressView("Preparing your compartment…").frame(maxWidth: .infinity, minHeight: 44)
+            } else if store.hasPendingLocker && !store.lockerNeedsStaff {
+                PrimaryAction(title: "Check request status", symbol: "arrow.clockwise") {
+                    Task { await store.refreshLockerOperation() }
+                }
+            } else if item.recognitionStatus == "complete", store.lockerStatus?.enabled == true, !store.lockerNeedsStaff {
+                PrimaryAction(title: "Assign a compartment", symbol: "door.left.hand.open") {
+                    depositAttempted = true
+                    Task { await store.beginDeposit(for: item) }
+                }.accessibilityIdentifier("assignCompartment")
+            } else if item.isPending {
+                ProgressView("Identifying your item…").frame(maxWidth: .infinity, minHeight: 44)
+            }
         }
     }
 }

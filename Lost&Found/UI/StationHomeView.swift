@@ -19,16 +19,21 @@ struct StationHomeView: View {
                         taskButton(title: "I lost something", detail: "Let’s find what you’re missing.",
                                    action: "Find an item", tab: .find)
                     }
+                    LockerAvailabilityView()
                     if store.reportNeedsStaff {
                         Notice(text: "Registration needs staff assistance. You can still search for lost items.",
                                symbol: "person.crop.circle.badge.exclamationmark")
                             .accessibilityIdentifier("stationNeedsStaff")
                     }
+                    if store.lockerNeedsStaff {
+                        Notice(text: "A compartment request needs staff assistance. Please ask staff to check it before starting another storage or collection request.",
+                               symbol: "person.crop.circle.badge.exclamationmark")
+                    }
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: "hand.raised.fill").foregroundStyle(FoundStyle.accent).accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 5) {
                             Text("A shared station, a fresh start.").font(.subheadline.weight(.medium))
-                            Text("Tap Finish when you’re done. Please ask staff before leaving or collecting an item.")
+                            Text("Follow the compartment number on screen. Confirm after placing or collecting your item and closing the door.")
                                 .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }.frame(maxWidth: .infinity, alignment: .center).padding(.horizontal, 8)
@@ -106,7 +111,8 @@ struct StationHomeView: View {
             .contentShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
         }
         .buttonStyle(StationPressStyle())
-        .disabled(tab == .report && store.reportNeedsStaff)
+        .disabled(store.isLockerBusy || (tab == .report && (store.reportNeedsStaff || store.lockerNeedsStaff ||
+            (store.lockerStatus.map { !$0.enabled || !$0.compartments.contains { $0.state == "free" } } ?? true))))
         .accessibilityIdentifier(tab == .report ? "startReport" : "startFind")
     }
 }

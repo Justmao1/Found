@@ -2,12 +2,12 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-10-21
+- Last refreshed: 2026-10-22
 - Primary product surface: a native SwiftUI app on a fixed iPad at a physical lost-and-found station. The device belongs to the station, not to each visitor. iPhone is a compatibility/testing surface, not the primary product.
 - Evidence reviewed: native station/Report/AppStore/PhotoCapture source and simulator screenshots; existing backend contract; current Apple HIG Materials, Motion, Accessibility, Sheets, and SwiftUI Liquid Glass documentation. Refreshed for the user's request for richer native visual and motion design.
 - User-confirmed positioning: one shared, fixed device at the lost-and-found location; this is not an app distributed to each individual user.
 - Implemented station shell: two-task home, explicit visitor sessions, camera-first Report, Find with inventory browsing, and protected staff tools.
-- User-confirmed operating model: visitors operate the station themselves. Staff assist physical handoff and maintain the device. Retain English and existing backend capabilities; no locker or claims transaction is implied.
+- User-confirmed operating model: visitors operate the station themselves. Four electromagnetic locks represent compartments 01–04; visitors explicitly confirm placement/collection and closing the door. Staff reconcile interrupted operations and maintain the device. See `docs/locker-flow.md` for the state/API contract.
 
 ## Brand
 - Personality: calm, helpful, practical. Retain the Found name and green accent; Report uses task-oriented native copy rather than marketing slogans.
@@ -17,22 +17,22 @@
 
 ## Product goals
 - Register physical items at the station using the fixed device's camera; preserve a failed submission for safe retry. The device photo library is a secondary import capability, not a visitor's personal library.
-- Browse saved photos and tags; retry failed recognition independently of saving.
-- Describe a lost item and compare actual matches with staff.
-- Non-goals: visitor accounts, backend authentication, claim transactions, locks and MQTT. Staff tools use native device-owner authentication.
+- Store one identified item in one free compartment; browse stored photos/tags and retry failed recognition independently of saving.
+- Describe a lost item, compare actual stored matches, confirm the correct item, open its compartment and acknowledge collection.
+- Non-goals: visitor accounts, cloud lock control and MQTT. Existing trusted-LAN access remains; staff tools use native device-owner authentication. A visitor ownership confirmation is not independent identity verification.
 - Success: a person can complete a station task, understand the physical handoff, and leave the device ready for its next operator without carrying over another person's unfinished input.
 
 ## Personas and jobs
 - Finders bring physical items to the station; owners come to the station to locate belongings.
-- Staff maintain the station device, network connection and inventory, and verify any physical handoff.
+- Staff maintain the station device, network connection and inventory, and physically verify interrupted deposit/retrieval operations before reconciling them.
 - Visitors self-serve in short, separate sessions. Staff may recover uncertain uploads after device authentication; visitors do not access device configuration or the station photo library.
 
 ## Information architecture
 - Primary navigation: home with “I found something” and “I lost something”. Each opens one focused task with Finish. Find links to browse items. Home has a secondary Staff entry and a noninteractive network indicator; no bottom tab bar or permanent sidebar.
-- Report: capture → native review → saving in place → saved-item confirmation → an explicit task completion boundary. In-task image continuity and safe retry remain essential. A completed operator's receipt/draft must not become the next visitor's starting screen.
-- The saved-photo screen shows actual AI tags directly beneath the photo, visible to the finder. Show a real tagging progress state until the existing server recognition completes, then update automatically. Failure/unavailable states preserve the saved receipt; the finder may retry tagging for this report. Finish remains available throughout. Before saving, explain that the tags appear after saving; never invent tags or silently upload an unsubmitted photo.
+- Report: capture → native review → saving in place → successful recognition → reserve/open a compartment → confirm item placed and door closed → stored receipt → an explicit task completion boundary. In-task image continuity and safe retry remain essential. A completed operator's receipt/draft must not become the next visitor's starting screen.
+- The saved-photo screen shows actual AI tags directly beneath the photo, visible to the finder. Show a real tagging progress state until the existing server recognition completes, then update automatically. Failure/unavailable states preserve the saved receipt; the finder may retry tagging for this report. Only successful recognition permits allocation. Finish during a pending physical operation moves it to staff recovery without freeing the compartment. Before saving, explain that the tags appear after saving; never invent tags or silently upload an unsubmitted photo.
 - Find: microphone first → recorded description → editable transcription → explicit search → candidate photos and reasons. Keyboard entry remains a visible secondary action. Once editing/reviewing a description, collapse the microphone hero to a compact action so the description and Find matches remain visible together in iPad landscape. Recording requires a deliberate tap and stops after 30 seconds; never listen automatically.
-- Items: latest records, refresh, photo detail and tags; recognition retry is available in staff tools.
+- Items: public browsing includes stored items eligible for retrieval. Staff inventory retains legacy/unassigned and collected records. Detail offers explicit ownership confirmation, one door-opening request and a separate collected/door-closed confirmation.
 - Staff: LocalAuthentication deviceOwnerAuthentication gates setup, inventory maintenance, station photo import and pending-report recovery. Missing/failed authentication keeps tools locked. Authorization ends on close, backgrounding or inactivity; no hardcoded PIN.
 
 ## Design principles
@@ -54,7 +54,7 @@
 
 ## Components
 - Reuse: green accent, API contracts and established terminology. Web content hierarchy and card layouts are not design references for Report.
-- Native components: station home task tiles, Finish action, inactivity warning, pass-through touch activity observer, staff authentication sheet, focused report editor and photo acquisition, plus existing item and search components.
+- Native components: station home task tiles, four numbered availability cells, Finish action, inactivity warning, pass-through touch activity observer, staff authentication sheet, focused report editor/photo acquisition, compartment operation card and staff reconciliation controls.
 - Variants: disabled, processing, failed, saved, tagged; status uses text as well as color.
 - Token/component ownership: extend `UI/Components.swift` for background, solid card surfaces, native action styles, press feedback and entrance motion. Avoid a separate design-system package.
 
@@ -74,22 +74,23 @@
 
 ## Interaction states
 - Loading: show Preparing photo during import and Saving item while the save request is outstanding. Keep the photo visible and block duplicate saves, photo changes and dismissal during saving. Never couple save completion to list refresh or tagging.
-- Empty: helpful explanation and relevant action; never replace errors with “no items”.
+- Empty: helpful explanation and relevant action; never replace errors with “no items”. Four occupied/reserved compartments show Full and ask for staff assistance; no fifth allocation is implied.
+- Locker recovery: persist immutable request identity before transmission. Reads never actuate hardware. Response loss offers status lookup; a deliberate retry uses the same ID. Never auto-release a reserved slot on timeout/background/restart. Staff physically check before resolving stored/collected/empty. Hide previous visitor receipts at session end.
 - Error: keep photo, note or search description; expose retry.
-- Success: preserve photo continuity, show Item saved, explain the physical handoff and separate AI status. Finishing the task should deliberately return to a clean station entry. Finish returns to a clean home. There is no recent visitor history on home.
+- Success: preserve photo continuity and distinguish Photo saved, Identifying, Preparing compartment, Ready to place/collect, and Stored/Collected. Show a prominent two-digit compartment number with a short physical instruction. A successful pulse is described as an opening command, not sensor-confirmed door motion. Finishing the task should deliberately return to a clean station entry. Finish returns to a clean home. There is no recent visitor history on home.
 - Disabled: block save without a photo and empty search; explain unavailable camera/AI.
 - Offline/slow network: bounded timeouts; keep current results with stale/error notice.
 - Poll only while foregrounded and recognition is pending; ignore results from a previous server.
 - Session boundary: Finish clears unsubmitted photo/note, query, search results, receipt and navigation; preserves server configuration and shared saved inventory. Session revisions reject old import/search completions.
 - Voice: show permission, listening (real level and elapsed time), transcribing, editable result and recoverable error states. A second tap finishes recording; Cancel discards recording/transcription. Preserve existing description on failure. Leaving Find, backgrounding, changing servers or ending a session stops recording and rejects late permission/transcription callbacks. Interruptions stop capture without automatically resuming. Delete temporary recordings after capture/cancellation; no audio or transcript is stored by the backend. Disclose Alibaba Cloud transcription before recording. Respect reduced motion; no synthetic waveform or decorative looping animation.
-- Inactivity: after 120 seconds without interaction show a 30-second warning with Keep Working / Finish Now. At 150 seconds reset to home. Touches and text changes renew activity; uploading cannot time out and completion starts a fresh interval. Backgrounding resets when no upload is in flight.
+- Inactivity: after 120 seconds without interaction show a 30-second warning with Keep Working / Finish Now. At 150 seconds reset to home. Touches and text changes renew activity; uploading and locker mutations cannot time out the visitor session and completion starts a fresh interval. Backgrounding resets once those requests finish; unresolved locker identity persists privately for staff.
 - Uncertain upload: keep the immutable request privately in process for staff recovery; block another public report until resolved, while Find remains available. Never erase this retry copy automatically or present it to the next visitor. Staff can explicitly clear it after checking inventory. Process termination still loses in-memory recovery data.
 - Deployment: foreground station stays awake. Guided Access/managed Single App Mode must be configured by the device owner; app navigation is not an OS lockdown.
 
 ## Content voice
 - Tone: brief, friendly English consistent with the other native tabs; use direct task language.
 - Terminology: “Photo saved”, “Tagging”, “Possible matches”.
-- Microcopy: AI sends photos to Alibaba Bailian; matches require staff verification.
+- Microcopy: AI sends photos to Alibaba Bailian; visitors compare details and confirm which item is theirs. “I’ve placed it inside and closed the door” and “I’ve taken my item and closed the door” acknowledge physical completion. Uncertain opening results ask for staff assistance.
 
 ## Implementation constraints
 - SwiftUI, Observation, PhotosUI, UIKit camera bridge and Foundation URLSession; no external dependencies.
@@ -115,4 +116,5 @@
 - [x] Primary operator: visitor self-service (confirmed).
 - [x] Initial idle policy: 120 + 30 seconds; staff access uses system device authentication. Timing can be adjusted after on-site use.
 - [ ] Fixed camera mounting direction and capture area; do not force a camera orientation before this is known.
-- [ ] Distribution/device lock-down and physical claiming integration are separate deployment decisions; the current backend does not implement a locker or claim transaction.
+- [x] Physical claiming: four compartments 01→GPIO17, 02→GPIO26, 03→GPIO13, 04→GPIO5; all use S8050 inverters with LOW-trigger relay modules. GPIO5 is disconnected from the prior feedback contact plan. Completion uses deliberate visitor acknowledgement, not a door sensor.
+- [ ] Distribution/device lock-down remains a deployment decision.

@@ -30,14 +30,26 @@ final class AppStore {
     private(set) var isSearching = false
     private(set) var recognizing: Set<String> = []
     private(set) var recognitionErrors: [String: String] = [:]
+    private(set) var lockerStatus: LockerStatusResponse?
+    private(set) var lockerOperation: LockerOperation?
+    private(set) var lockerItem: FoundItem?
+    private(set) var lockerError: String?
+    private(set) var isLockerBusy = false
+    private(set) var lockerNeedsStaff = false
+    private(set) var storedItems: [FoundItem] = []
+    @ObservationIgnored private var pendingLocker: PendingLockerCommand?
+    @ObservationIgnored private var lockerRefreshSequence = 0
+    @ObservationIgnored private let lockerJournalURL: URL
     @ObservationIgnored private var refreshSequence = 0
     @ObservationIgnored private var lastVisitorActivity = Date()
     @ObservationIgnored private let session: URLSession
     @ObservationIgnored private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard, session: URLSession = .shared) {
+    init(defaults: UserDefaults = .standard, session: URLSession = .shared, lockerJournalURL: URL? = nil) {
         self.defaults = defaults
         self.session = session
+        self.lockerJournalURL = lockerJournalURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Found/pending-locker.json")
         #if targetEnvironment(simulator)
         let fallback = "http://127.0.0.1:8080"
         #else
@@ -45,6 +57,11 @@ final class AppStore {
         #endif
         let saved = defaults.string(forKey: "serverAddress") ?? fallback
         serverAddress = (try? ServerAddress.parse(saved))?.absoluteString ?? fallback
+        if let data = try? Data(contentsOf: self.lockerJournalURL),
+           let command = try? JSONDecoder().decode(PendingLockerCommand.self, from: data) {
+            pendingLocker = command
+            lockerNeedsStaff = true
+        }
     }
 
     var client: APIClient {
@@ -54,10 +71,13 @@ final class AppStore {
     var hasPendingItems: Bool {
         items.contains { ["pending", "processing"].contains($0.recognitionStatus) }
     }
+    var hasPendingLocker: Bool { pendingLocker != nil }
+    var availableItems: [FoundItem] { lockerStatus?.enabled == false ? items : storedItems }
 
     @discardableResult
     func beginVisitorTask(_ tab: Tab) -> Bool {
-        guard !isSaving, tab != .report || (!reportNeedsStaff && submission == nil) else { return false }
+        guard !isSaving, !isLockerBusy,
+              tab != .report || (!reportNeedsStaff && submission == nil && !hasPendingLocker) else { return false }
         guard endVisitorSession() else { return false }
         selectedTab = tab
         recordVisitorActivity()
@@ -66,7 +86,9 @@ final class AppStore {
 
     @discardableResult
     func endVisitorSession() -> Bool {
-        guard !isSaving else { return false }
+        guard !isSaving, !isLockerBusy else { return false }
+        lockerNeedsStaff = hasPendingLocker
+        lockerOperation = nil; lockerItem = nil; lockerError = nil
         visitorRevision += 1
         selectedTab = .home
         query = ""; searchResult = nil; searchError = nil; isSearching = false
@@ -107,7 +129,7 @@ final class AppStore {
     }
 
     func checkVisitorInactivity(at date: Date = Date()) {
-        guard selectedTab != .home, selectedTab != .settings, !isSaving else {
+        guard selectedTab != .home, selectedTab != .settings, !isSaving, !isLockerBusy else {
             idleSecondsRemaining = nil
             return
         }
@@ -124,7 +146,7 @@ final class AppStore {
     func changeServer(to address: String) throws {
         let url = try ServerAddress.parse(address)
         guard url.absoluteString != serverAddress else { return }
-        guard !isSaving, submission == nil else { throw SettingsError.pendingUpload }
+        guard !isSaving, !isLockerBusy, submission == nil, !hasPendingLocker else { throw SettingsError.pendingUpload }
         revision += 1
         visitorRevision += 1
         refreshSequence += 1
@@ -134,6 +156,8 @@ final class AppStore {
         isRefreshing = false; isSearching = false
         listError = nil; statusMessage = nil; searchResult = nil; searchError = nil
         lastSaved = nil; recognizing = []; recognitionErrors = [:]
+        lockerStatus = nil; lockerOperation = nil; lockerItem = nil; lockerError = nil
+        storedItems = []; lockerNeedsStaff = false; lockerRefreshSequence += 1
         query = ""
         clearDraft()
         recordVisitorActivity()
@@ -152,6 +176,7 @@ final class AppStore {
             let result = try await api.items()
             guard revision == currentRevision, sequence == refreshSequence, !Task.isCancelled else { return }
             items = result.items; total = result.total; connected = true; listError = nil
+            if let saved = lastSaved, let refreshed = result.items.first(where: { $0.id == saved.id }) { lastSaved = refreshed }
             do {
                 let status = try await api.aiStatus()
                 guard revision == currentRevision, sequence == refreshSequence, !Task.isCancelled else { return }
@@ -162,9 +187,12 @@ final class AppStore {
                 aiConfigured = false
                 statusMessage = "Photos can be saved. Could not check AI tagging; pull to refresh."
             }
+            guard revision == currentRevision, sequence == refreshSequence, !Task.isCancelled else { return }
+            await refreshLockers()
         } catch {
             guard revision == currentRevision, sequence == refreshSequence, !Task.isCancelled else { return }
             connected = false; listError = error.localizedDescription
+            lockerRefreshSequence += 1; lockerStatus = nil; storedItems = []
         }
     }
 
@@ -257,12 +285,211 @@ final class AppStore {
         guard revision == currentRevision, !Task.isCancelled else { return }
         await refresh()
     }
+
+    func refreshLockers() async {
+        let server = revision
+        lockerRefreshSequence += 1
+        let sequence = lockerRefreshSequence
+        let api = client
+        do {
+            let status = try await api.lockers()
+            guard revision == server, sequence == lockerRefreshSequence, !Task.isCancelled else { return }
+            // Availability must not wait for a second request that the view may cancel.
+            lockerStatus = status; storedItems = []
+            guard status.enabled else { return }
+            do {
+                let available = try await api.items(availableOnly: true).items
+                guard revision == server, sequence == lockerRefreshSequence, !Task.isCancelled else { return }
+                storedItems = available
+            } catch {
+                // The fresh compartment snapshot is still valid; old searchable items are not.
+                guard revision == server, sequence == lockerRefreshSequence, !Task.isCancelled else { return }
+                storedItems = []
+            }
+        } catch {
+            guard revision == server, sequence == lockerRefreshSequence, !Task.isCancelled else { return }
+            // Never advertise stale free slots while the locker API is unreachable.
+            lockerStatus = nil; storedItems = []
+        }
+    }
+
+    func beginDeposit(for item: FoundItem) async {
+        guard selectedTab == .report, lastSaved?.id == item.id,
+              item.recognition?.tags.isEmpty == false, item.status == "recorded",
+              !Task.isCancelled else { return }
+        await beginLockerOperation(item: item, kind: "deposit")
+    }
+
+    func beginRetrieval(for item: FoundItem) async {
+        guard item.isStored, !Task.isCancelled else { return }
+        await beginLockerOperation(item: item, kind: "retrieve")
+    }
+
+    private func beginLockerOperation(item: FoundItem, kind: String) async {
+        guard !isLockerBusy, !hasPendingLocker, !lockerNeedsStaff else { return }
+        guard lockerStatus?.enabled == true else {
+            lockerError = "Locker service is unavailable. Please ask staff for help."
+            return
+        }
+        let request = LockerOperationRequest(itemID: item.id, kind: kind)
+        pendingLocker = PendingLockerCommand(serverAddress: serverAddress, request: request)
+        do { try persistLockerCommand() } // Atomic file replacement completes before any network side effect.
+        catch {
+            pendingLocker = nil
+            lockerError = "Could not save the locker request on this iPad. Please ask staff for help."
+            return
+        }
+        lockerItem = item; lockerOperation = nil; lockerError = nil
+        await sendPendingLockerCommand()
+    }
+
+    /// An explicit recovery action reuses the exact request identity; never called by polling.
+    func retryLockerRequest() async {
+        guard !isLockerBusy, hasPendingLocker else { return }
+        await sendPendingLockerCommand()
+    }
+
+    private func sendPendingLockerCommand() async {
+        guard let command = pendingLocker, command.serverAddress == serverAddress else {
+            lockerError = "This locker request belongs to another server. Please ask staff for help."
+            return
+        }
+        isLockerBusy = true; lockerError = nil
+        defer { isLockerBusy = false; recordVisitorActivity() }
+        do {
+            let result = try await client.beginLockerOperation(command.request)
+            try applyLockerResponse(result, expected: command.request)
+        } catch {
+            if case APIError.server(let code, _) = error, (400..<500).contains(code), code != 408 {
+                // A rejected command has no effect. Committed/uncertain operations return state.
+                let rejected = pendingLocker
+                pendingLocker = nil
+                do { try persistLockerCommand(); lockerNeedsStaff = false }
+                catch { pendingLocker = rejected }
+            }
+            lockerError = error.localizedDescription
+        }
+        await refreshLockers()
+    }
+
+    /// Read-only recovery. A missing response never causes an automatic pulse.
+    func refreshLockerOperation() async {
+        guard !isLockerBusy, let command = pendingLocker,
+              command.serverAddress == serverAddress else { return }
+        isLockerBusy = true; lockerError = nil
+        defer { isLockerBusy = false; recordVisitorActivity() }
+        do {
+            let response = try await client.lockerOperation(id: command.request.requestID)
+            try applyLockerResponse(response, expected: command.request)
+        } catch {
+            lockerError = error.localizedDescription
+        }
+        await refreshLockers()
+    }
+
+    func completeLockerOperation() async {
+        guard !isLockerBusy, !lockerNeedsStaff, let operation = lockerOperation,
+              operation.state == "awaiting_confirmation", let command = pendingLocker,
+              command.serverAddress == serverAddress, command.request.requestID == operation.id else { return }
+        isLockerBusy = true; lockerError = nil
+        defer { isLockerBusy = false; recordVisitorActivity() }
+        do {
+            let response = try await client.completeLockerOperation(id: operation.id)
+            try applyLockerResponse(response, expected: command.request)
+        } catch { lockerError = error.localizedDescription }
+        await refreshLockers()
+    }
+
+    func resolveLockerOperation(_ operation: LockerOperation, outcome: String) async {
+        guard !isLockerBusy else { return }
+        isLockerBusy = true; lockerError = nil
+        defer { isLockerBusy = false; recordVisitorActivity() }
+        do {
+            let response = try await client.resolveLockerOperation(id: operation.id, outcome: outcome)
+            let expected = LockerOperationRequest(requestID: operation.id, itemID: operation.itemID, kind: operation.kind)
+            try applyLockerResponse(response, expected: expected)
+            // Staff reconciliation must not become a public visitor receipt.
+            lockerOperation = nil; lockerItem = nil
+        } catch { lockerError = error.localizedDescription }
+        await refreshLockers()
+    }
+
+    private func applyLockerResponse(_ response: LockerOperationResponse, expected: LockerOperationRequest) throws {
+        guard response.operation.id == expected.requestID, response.operation.itemID == expected.itemID,
+              response.operation.kind == expected.kind, response.item.id == expected.itemID,
+              ["01", "02", "03", "04"].contains(response.operation.compartmentID),
+              ["actuating", "awaiting_confirmation", "completed", "uncertain"].contains(response.operation.state) else {
+            throw APIError.invalidResponse
+        }
+        lockerOperation = response.operation; lockerItem = response.item
+        lockerError = response.operation.error
+        refreshSequence += 1; isRefreshing = false
+        lockerRefreshSequence += 1
+        if let status = lockerStatus {
+            let compartments = status.compartments.map { compartment in
+                guard compartment.id == response.operation.compartmentID else { return compartment }
+                // A historical acknowledgement must not release a compartment now used by someone else.
+                if response.operation.state == "completed", let owner = compartment.itemID, owner != response.item.id {
+                    return compartment
+                }
+                if response.item.compartmentID == compartment.id {
+                    let state: String
+                    switch response.item.status {
+                    case "deposit_pending": state = "reserved"
+                    case "stored": state = "occupied"
+                    case "retrieval_pending": state = "retrieving"
+                    case "recovery": state = "recovery"
+                    default: return compartment
+                    }
+                    return LockerCompartment(id: compartment.id, state: state, itemID: response.item.id)
+                }
+                if response.operation.state == "completed", response.item.compartmentID == nil,
+                   ["recorded", "collected"].contains(response.item.status), compartment.itemID == response.item.id {
+                    return LockerCompartment(id: compartment.id, state: "free")
+                }
+                return compartment
+            }
+            var operations = status.operations.filter { $0.id != response.operation.id }
+            if response.operation.state != "completed" { operations.append(response.operation) }
+            lockerStatus = LockerStatusResponse(enabled: status.enabled, driver: status.driver,
+                                                compartments: compartments, operations: operations)
+        }
+        if let index = items.firstIndex(where: { $0.id == response.item.id }) { items[index] = response.item }
+        if lastSaved?.id == response.item.id { lastSaved = response.item }
+        storedItems.removeAll { $0.id == response.item.id }
+        if response.item.isStored { storedItems.insert(response.item, at: 0) }
+        if let results = searchResult {
+            searchResult = SearchResponse(matches: results.matches.filter { $0.id != response.item.id },
+                                          searchedCount: results.searchedCount, pendingCount: results.pendingCount)
+        }
+        if response.operation.state == "completed", pendingLocker?.request.requestID == expected.requestID {
+            let completed = pendingLocker
+            pendingLocker = nil
+            do { try persistLockerCommand(); lockerNeedsStaff = false }
+            catch { pendingLocker = completed; throw error }
+        }
+    }
+
+    private func persistLockerCommand() throws {
+        if let pendingLocker {
+            let data = try JSONEncoder().encode(pendingLocker)
+            try FileManager.default.createDirectory(at: lockerJournalURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: lockerJournalURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        } else if FileManager.default.fileExists(atPath: lockerJournalURL.path) {
+            try FileManager.default.removeItem(at: lockerJournalURL)
+        }
+    }
+}
+
+private struct PendingLockerCommand: Codable {
+    let serverAddress: String
+    let request: LockerOperationRequest
 }
 
 enum SettingsError: LocalizedError {
     case pendingUpload
     var errorDescription: String? {
-        "Finish retrying your photo draft, or clear it in Report, before changing servers."
+        "Finish your pending photo or locker operation before changing servers. Staff can check interrupted locker operations."
     }
 }
 
