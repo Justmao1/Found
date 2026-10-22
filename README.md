@@ -1,12 +1,12 @@
-# Found · Native iOS
+# Found · SwiftUI iPad + Raspberry Pi
 
-将旁边 `lost-found-box` 的网页客户端迁移为 **部署在固定失物招领处的 SwiftUI 原生 iPad 终端**。设备由站点统一设置，供现场办理登记和查找使用，不是分发给每位用户的个人 App。沿用 Python 服务和 SQLite 数据，App 内没有 WebView，也不保存 AI API Key。
+**部署在固定失物招领处的 SwiftUI 原生 iPad 终端，配套树莓派 Python 后端。** 设备由站点统一设置，供现场办理登记和查找使用，不是分发给每位用户的个人 App。原生端由原有网页客户端迁移而来，沿用 Python 服务和 SQLite 数据；App 内没有 WebView，也不保存 AI API Key。
 
 固定终端定位已记录在 `DESIGN.md`。首页提供「捡到物品」「寻找失物」两个访客任务，结束后清理本次操作并回到首页。工作人员通过设备认证管理站点。iPhone 适配保留为兼容和测试能力。
 
 ![Found iPad 首页](verification/home-brand-ipad.png)
 
-本仓库包含原生 App、Xcode 工程和测试。Python 后端单独部署；下文的本地服务及联调命令需要旁边存在 `lost-found-box` 目录。API 密钥、证书、数据库和本机运行记录不纳入版本管理。
+本仓库包含原生 App、Xcode 工程、Python 后端及双方测试。后端位于 [`lost-found-box/`](lost-found-box/README.md)，包含原有网页、视觉识别、自然语言搜索、语音转写、配置工具及 systemd 服务示例。API 密钥、证书、数据库、物品照片、备份和本机运行记录不纳入版本管理。
 
 ## 打开与运行
 
@@ -16,10 +16,10 @@
 
 真机默认使用 `https://work123.local:8443`。设备和树莓派须在同一网络，并允许 App 的 Local Network 权限。语音功能需要同步部署本次更新的 `server.py` 和新增的 `speech.py`，沿用已有 `vision.py` 与百炼配置。首次使用项目自签 CA 时，先安装公开 CA 证书，再在 iOS「设置 → 通用 → 关于本机 → 证书信任设置」开启完全信任。不要将证书私钥放入 App；客户端保留系统证书与域名校验。
 
-模拟器默认使用 `http://127.0.0.1:8080`。在 Mac 上从网页项目目录启动原有服务：
+模拟器默认使用 `http://127.0.0.1:8080`。在 Mac 上从本仓库根目录启动后端（Python 3.9+，仅使用标准库）：
 
 ```sh
-cd ../lost-found-box
+cd lost-found-box
 python3 server.py
 ```
 
@@ -73,6 +73,7 @@ Report 的照片在确认、上传、失败和成功阶段始终保留。保存�
 - `DESIGN.md`：原生迁移的界面约定，延续网页的英文内容与绿色品牌。
 - `Tests/`：Foundation 接口契约测试。
 - `NativeTests/`：iOS 图片处理和状态竞争回归测试。
+- `lost-found-box/`：树莓派后端、网页、部署示例、Python/网页测试。部署及百炼 Key 配置见该目录的 README。
 
 ## 验证
 
@@ -82,6 +83,12 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 
 # 真实 Python 后端联调：临时数据库、无 AI 密钥、自动清理
 python3 Tools/verify_api_integration.py
+
+# 后端回归测试，在本仓库的 lost-found-box 目录执行
+cd lost-found-box
+python3 -m unittest discover -s tests -v
+node --test tests/test_camera.js  # 可选；服务运行不需要 Node
+cd ..
 
 # 原生 XCTest，按本机可用模拟器调整 destination
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \

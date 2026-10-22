@@ -1,0 +1,14 @@
+[Unit]
+Description=Lost and Found photo registration (HTTPS)
+After=network.target
+
+[Service]
+WorkingDirectory=%h/lost-found-box
+ExecStart=/usr/bin/python3 %h/lost-found-box/server.py --host 0.0.0.0 --port 8443 --cert %h/lost-found-box/certs/server.crt --key %h/lost-found-box/certs/server.key
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

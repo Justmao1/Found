@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f5f6f2">
+  <title>Found · Lost & Found</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Found home"><span class="brand-mark" aria-hidden="true">↗</span><span>Found <small>LOST &amp; FOUND</small></span></a>
+      <span id="connection" class="connection" role="status">Connecting…</span>
+    </header>
+    <main>
+      <section class="intro">
+        <p class="eyebrow">CAMPUS LOST &amp; FOUND</p>
+        <h1>A photo today.<span> A way back tomorrow.</span></h1>
+        <p class="lead">Capture a found item. A few simple tags can help someone find it again.</p>
+      </section>
+      <nav class="mode-switch" aria-label="Choose a task">
+        <button id="show-register" type="button" class="button primary" aria-pressed="true">Report a found item</button>
+        <button id="show-search" type="button" class="button secondary" aria-pressed="false">Find an item</button>
+      </nav>
+      <section id="search-panel" class="search-panel" aria-labelledby="search-title" hidden>
+        <div class="panel-heading"><div><span class="step">FIND YOUR ITEM</span><h2 id="search-title">What did you lose?</h2></div></div>
+        <p class="records-intro">Describe it in your own words, in any language. Include its type, color, shape or a distinctive detail.</p>
+        <form id="search-form">
+          <label for="search-query">Item description</label>
+          <textarea id="search-query" rows="3" maxlength="500" required placeholder="e.g. I lost a white plastic bottle with a green label."></textarea>
+          <div class="form-footer"><span>AI compares your description with saved item tags and notes.</span><span id="search-count">0 / 500</span></div>
+          <button id="search-submit" type="submit" class="button primary">Find matches</button>
+        </form>
+        <p id="search-status" class="feedback" role="status" aria-live="polite">Describe your item to get started.</p>
+        <div id="search-results" class="search-results" aria-label="Possible matches"></div>
+        <p class="records-intro search-disclaimer">Matches are suggestions. Check the photo and details with staff before collecting an item.</p>
+      </section>
+      <div id="register-panel" class="workspace">
+        <section class="capture-panel" aria-labelledby="capture-title">
+          <div class="panel-heading"><div><span class="step">01 / REGISTER</span><h2 id="capture-title">Capture an item</h2></div><span class="pill">One item at a time</span></div>
+          <div class="viewfinder" id="viewfinder">
+            <div id="empty-camera" class="empty-camera">
+              <svg width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true"><path d="M10 22h11l4-6h14l4 6h11v28H10V22Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="32" cy="35" r="9" stroke="currentColor" stroke-width="2"/><path d="M5 15V7h8M51 7h8v8M5 49v8h8M51 57h8v-8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              <h3>Place the item in view</h3><p>Use good lighting and keep the whole item in frame.</p>
+            </div>
+            <video id="camera" autoplay muted playsinline hidden aria-label="Live camera preview"></video>
+            <img id="preview" hidden alt="Photo ready to register">
+            <span class="frame-label" id="frame-label">Photo preview</span>
+          </div>
+          <p id="camera-help" class="camera-help" hidden></p>
+          <div class="camera-actions">
+            <button id="start-camera" type="button" class="button primary">Open camera</button>
+            <button id="take-photo" type="button" class="button primary" hidden>Take photo</button>
+            <button id="choose-photo" type="button" class="button secondary">Choose photo</button>
+            <button id="reset-photo" type="button" class="button secondary" hidden>Retake</button>
+            <input type="file" id="photo-file" accept="image/*" hidden>
+          </div>
+          <form id="register-form">
+            <label for="note">Item notes <span>Optional</span></label>
+            <textarea id="note" maxlength="200" rows="2" placeholder="e.g. Black water bottle, found on the second floor of the library"></textarea>
+            <div class="form-footer"><span>Saving sends this photo to Alibaba Bailian to generate tags.</span><span id="note-count">0 / 200</span></div>
+            <button id="save-photo" type="submit" class="button save" disabled>Save item <span aria-hidden="true">↗</span></button>
+          </form>
+          <p id="feedback" class="feedback" role="status" aria-live="polite">Take or choose a photo, then save the item.</p>
+        </section>
+        <aside class="records-panel" aria-labelledby="records-title">
+          <div class="panel-heading"><div><span class="step">02 / RECORDS</span><h2 id="records-title">Saved items <span id="record-count" class="count">—</span></h2></div><button id="refresh" class="text-button" type="button">Refresh</button></div>
+          <p id="ai-status" class="records-intro" role="status">Checking automatic tagging…</p>
+          <p id="records-status" class="records-status" role="status">Loading items…</p>
+          <div id="records" class="records"></div>
+          <div class="scope-note"><span aria-hidden="true">i</span><p>Check tags against the photo. Locker storage is not enabled yet; saving a photo does not confirm an item is in a locker.</p></div>
+        </aside>
+      </div>
+    </main>
+    <footer><span>Less lost. More found.</span><span>Found · Campus prototype</span></footer>
+  </div>
+</body>
+</html>

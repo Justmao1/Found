@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
-BACKEND = APP_ROOT.parent / "lost-found-box" / "server.py"
+BACKEND = APP_ROOT / "lost-found-box" / "server.py"
 EVIDENCE = APP_ROOT / "verification" / "api-integration.txt"
 
 

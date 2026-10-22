@@ -4,6 +4,9 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
+__pycache__/
+*.py[cod]
+.venv/
 
 # Local agent state, credentials and station-specific certificates
 .omx/

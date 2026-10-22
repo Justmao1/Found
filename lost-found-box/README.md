@@ -1,0 +1,210 @@
+# 归处 · 失物照片登记
+
+## 在 Found 仓库中运行
+
+后端与 SwiftUI App 现在共同维护于 [Justmao1/Found](https://github.com/Justmao1/Found)。从仓库根目录进入 `lost-found-box/` 即可运行本页命令，无需额外复制旁边的项目目录。
+
+```bash
+git clone git@github.com:Justmao1/Found.git
+cd Found/lost-found-box
+python3 server.py
+```
+
+首次克隆不包含 `config/`、`certs/`、`data/`、`backups/` 和 `api.md`。无 AI 配置时仍可本地登记照片；需要 AI 时运行 `python3 tools/configure_ai.py`，密钥在终端隐藏输入并写入本机忽略的配置文件。HTTPS 证书按下文生成。
+
+`deploy/` 的用户级 systemd 示例沿用项目树莓派的 `%h/lost-found-box` 部署目录。新设备若直接从 Git 克隆目录运行，先将示例里的 `WorkingDirectory` 和 `ExecStart` 路径改为实际目录，再安装至 `~/.config/systemd/user/`。已有设备更新源码时保留原来的配置、证书和数据库。
+
+2026-10-22 入库说明：源码取自本机维护的后端目录；本次 `work123.local` 无法解析，未进行树莓派实时文件比对或远程部署。下方历史部署记录不是本次连通性检查结果。门锁脚本属于独立硬件诊断工具，未接入 App 或 HTTP API；上传和自动测试不会驱动 GPIO。
+
+## 功能
+
+当前实现：拍照或选择照片 → 预览／重拍 → 可选备注 → 上传登记 → 后台自动识别 → 查看最多5个类别、颜色、外形标签。照片先保存，识别失败可单独重试。
+
+**百炼图片识别已在项目树莓派真实调用成功；新部署需单独配置 API Key。后端已提供短录音转文字接口，供原生 iPad 访客自助应用使用；尚未接入格口分配、门锁或 MQTT。** 页面显示“照片已登记”，不表示物品已入柜。树莓派运行服务与 SQLite，iPad 可使用原生应用或现有网页。当前服务器面向可信局域网课堂演示，没有用户登录与权限隔离，不部署到公网；任何能访问该地址的人都可以查看及提交登记。
+
+## 已部署到项目树莓派（2026-10-13）
+
+- 主机：`wlb123@work123.local`，当前 IP `192.168.5.3`。
+- iPad 首次设置：<http://192.168.5.3:8088>，仅提供公开 CA 证书和安装说明。
+- 照片登记：<https://192.168.5.3:8443> 或 <https://work123.local:8443>。
+- 服务目录：`/home/wlb123/lost-found-box`。用户级 systemd 服务 `lost-found-box.service` 与 `lost-found-setup.service` 已启用，用户 linger 已开启，SSH 退出后保持运行。
+- 已验证树莓派上 10 项后端测试、可信 HTTPS、实际网络上传／读回／去重、服务重启后持久化；未重启整机，用户已在实际 iPad 拍照并保存，服务端已核对照片读回。
+- 当前证书有效期至 2027-01-11；IP 更换且通过新 IP 访问时，需要重新签发覆盖该 IP 的服务器证书。
+
+在树莓派维护服务：
+
+```bash
+systemctl --user status lost-found-box.service lost-found-setup.service
+systemctl --user restart lost-found-box.service
+# 不再需要证书安装页时，可以单独关闭：
+systemctl --user disable --now lost-found-setup.service
+```
+
+下文“手动启动”用于复现或其他设备；已部署的树莓派不必重复执行，否则会与后台服务争用端口。
+
+## 在当前电脑运行
+
+只使用 Python 标准库，无需 pip／npm 安装。Python 3.9+。
+
+```bash
+cd lost-found-box
+python3 server.py
+```
+
+浏览器打开 http://localhost:8080 。本机 localhost 可以申请摄像头权限；没有摄像头也可“选择照片”。默认只监听本机。
+
+## 在树莓派上运行，供 iPad 访问
+
+### 准备文件和 HTTPS 证书
+
+在当前电脑的 `lost-found-box` 目录执行：
+
+```bash
+python3 tools/make_tls.py --hostname work123.local --ip 192.168.5.3
+```
+
+`192.168.5.3` 是此前网络检查得到的地址，运行前应按树莓派当时的 `hostname -I` 核对。可省略 `--ip` 并只通过证书里的主机名访问。证书工具依赖系统 OpenSSL，会生成独立的项目 CA，不改动电脑系统信任；服务器证书有效期 90 天。地址改变时使用新 IP 加 `--renew` 重新签发，原 CA 保留。
+
+SSH 可用后，在当前电脑执行：
+
+```bash
+ssh wlb123@work123.local 'mkdir -p ~/lost-found-box/certs'
+scp server.py vision.py search.py speech.py wlb123@work123.local:~/lost-found-box/
+scp -r static wlb123@work123.local:~/lost-found-box/
+scp certs/server.crt certs/server.key wlb123@work123.local:~/lost-found-box/certs/
+ssh wlb123@work123.local 'chmod 600 ~/lost-found-box/certs/server.key'
+```
+
+只传服务端证书和密钥。不要把 CA 私钥 `ca.key` 上传、分享或放进代码仓库。
+
+在树莓派终端启动：
+
+```bash
+cd ~/lost-found-box
+python3 server.py --host 0.0.0.0 --port 8443 --cert certs/server.crt --key certs/server.key
+```
+
+手动启动会持续运行在当前终端，Ctrl+C 停止。项目树莓派已使用前述后台服务，不需要此步骤。启动失败时检查 Python、端口占用和证书路径。
+
+### 在项目 iPad 信任证书
+
+1. 将 `certs/ca.crt` 通过 AirDrop／文件传输送到项目 iPad，只传这个公开证书。
+2. 在设置里安装对应证书描述文件，然后到“通用 → 关于本机 → 证书信任设置”开启此项目 CA 的完全信任。受管理设备可能不允许安装，菜单随系统版本可能不同。
+3. iPad 与树莓派连接可互通的 Wi-Fi，在 Safari 打开 `https://work123.local:8443`，或打开证书覆盖的 `https://192.168.5.3:8443`。
+4. 网站不应显示证书警告。点击“打开相机”，授权后使用后摄拍照；后摄不可用时浏览器可能使用其他摄像头。
+5. 页面持续在前台使用；切到后台时会停止相机，返回后点击打开相机恢复。
+
+普通 `http://192.168…` 不是远端相机的部署方式，服务器也拒绝非本机的明文绑定。仅在浏览器点“忽略证书警告”不等于完成可信 HTTPS 配置。
+
+使用结束后可以从项目 iPad 移除该 CA 的信任与描述文件。
+
+## 数据和使用限制
+
+- 数据默认保存在 `data/items.sqlite3`，相对于 server.py 所在目录，不随工作目录改变。图片和记录写入同一个 SQLite 事务，重启后保留。
+- 可用 `--data-dir /绝对路径` 指定其他目录。备份时先正常停止服务，再复制整个 data 目录（包括可能存在的 WAL 文件）。
+- 列表显示最新 100 条及总数，照片可点击查看原图。每条记录包含服务器 UTC 时间，网页按设备时区显示。
+- 浏览器将照片缩到最长 1600 像素并转成 JPEG；原始文件超过 25MB 提示换图。后端接受最多 5MiB JPEG／PNG，请求体最多 8MiB，备注最多 200 字符。
+- 后端校验图片容器结构和尺寸，未执行完整像素解码；不作为面向不可信互联网用户的图片处理服务。
+- 上传失败后保留当前照片和请求 ID，直接再次保存不会重复登记。首次提交后备注锁定以保证重试内容一致；要改内容需重新选择照片。页面刷新会清除尚未保存的草稿，应先查看列表确认上次是否成功。
+- 同一张图作为新的一次登记可以再次保存；幂等针对同一次请求重试，不自动把相同外观的不同物品合并。
+- 暂无删除、账户、取物状态或自动数据清理。存储空间不足会返回保存失败，不应显示成功。
+
+## 验证
+
+```bash
+python3 -m unittest discover -s tests -v
+node --check static/app.js  # 开发电脑可选；树莓派运行不需要 Node
+node --test tests/test_camera.js  # 开发电脑上的相机生命周期回归测试
+```
+
+手工验收：
+
+1. 选择一张真实照片，备注后保存；列表出现照片，刷新页面仍在。
+2. 打开照片原图确认上传正确，重启服务后记录仍在。
+3. 断开服务后保存，页面显示失败并保留照片；恢复服务后重试只产生一条记录。
+4. 拒绝摄像头权限时有提示，仍可选择已有照片。
+5. 实际 iPad 检查证书信任、前后摄、旋转方向、暂停／恢复相机及连续拍照登记。
+
+自动测试不能替代实际 iPad 和树莓派验证；验收结果见 `VERIFICATION.md`。
+
+## 文件
+
+`server.py` 为标准库服务器，`static/` 为无构建步骤的网页，`tools/make_tls.py` 生成本地证书，`tests/` 为 HTTP／数据库测试。先用最小服务器完成照片链路，后续接 AI 时再评估迁移到原计划的 FastAPI，避免当前阶段引入安装依赖。
+
+参考：[WebKit 摄像头访问和 HTTPS](https://webkit.org/blog/7763/a-closer-look-into-webrtc/)、[Apple 手动安装证书的信任设置](https://support.apple.com/en-us/102390)。
+
+## 百炼图片识别
+
+在电脑终端运行下列命令，API Key 使用隐藏输入，不要粘贴到聊天或命令参数中：
+
+```bash
+ssh -t wlb123@work123.local 'python3 ~/lost-found-box/tools/configure_ai.py'
+```
+
+按提示输入 Key；默认视觉模型 `qwen3-vl-plus`（须在北京地域账户可用）。业务空间 ID 可选：提供后使用空间专属域名，留空使用官方仍支持的 `https://dashscope.aliyuncs.com/compatible-mode/v1`。两者都调用 `/chat/completions`。模型名可在设置时更改。
+
+配置写入树莓派 `config/ai.json`，权限 600，已加入忽略规则。服务每次动态读取，刷新 iPad 网页即可启用。`GET /api/ai/status` 的 configured 只表示本地配置存在且格式有效，不代表 Key、额度或模型权限已经验证。也支持 `LOST_FOUND_AI_CONFIG` 指定配置路径或 `DASHSCOPE_API_KEY` 环境变量。项目打包时必须排除 config、certs、data 和存有凭据的 api.md。
+
+保存记录后，服务器自动将该照片的 Base64 发送至百炼。备注不发送。仅提取最多5个短标签，每个不超过24个字符，优先为类别、颜色、形状或显著外观。身份证和银行卡仅分类，不读取姓名、号码、地址等个人信息；不提取标签文字或背景物品。页面显示标签，可用于后续搜索，但不能据此认定所有权或自动开锁。
+
+识别成功后保存到 SQLite 的独立 recognitions 表，已有照片结构不变。成功结果复用，同物品并发请求共享调用，自动识别使用有界后台队列；失败不因轮询或服务重启自动重试，不删除照片。显式“重试识别”可以再次调用。主动重试失败请求可能产生新的 API 费用。云请求设置30秒 socket超时，浏览器45秒等待；不是整体耗时的硬实时保证。
+
+接口：`POST /api/items/<uuid>/recognize`，JSON `{}`，请求头 `X-Requested-With: lost-found-box`；返回 `{item: ...}`，物品含 `recognition` 字段（未识别为 null，成功为 `{tags, model, version: 3}`）和 `recognition_status`（pending/processing/failed/disabled/complete）。列表同样返回识别字段。API Key 不返回浏览器，云端原始错误不进入页面。
+
+依据：[图像与视频理解](https://help.aliyun.com/zh/model-studio/vision)、[Chat API 参数](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)。当前仅面向可信局域网演示：访问页面的人都可发起识别，尚无用户级鉴权或累计费用配额。
+
+2026-10-13 实测：北京地域 `qwen3-vl-plus` 成功识别已有 iPad 照片，返回“鲜牛奶瓶”及结构化特征。Key 支持带点分段的完整凭据，不应按固定前缀长度或不完整正则截取。
+
+2026-10-14 改为后台自动识别及简短标签。旧版长描述不再展示，已配置的服务启动后会将旧记录重新识别为标签。失败时保留照片，页面提供“重试识别”。页面在待识别期间轮询结果，刷新页面不会重复发起识别。
+
+界面已切换为英文，包括按钮、提示、错误信息、辅助阅读标签和日期格式。新识别仅输出1–5个简短英文标签。识别缓存版本为3，原中文标签会自动更新为英文；用户输入的备注原样保留。
+
+## 自然语言查找
+
+页面顶部选择 **Find an item**，输入自然语言描述（中文、英文均可），点击 **Find matches**。服务器把描述和库中已有标签、备注交给百炼模型比较语义，返回最多5条真实记录及简短英文匹配理由。照片由本地服务展示，搜索时不重复向云端上传照片。
+
+`POST /api/search` 接收 `{"query":"I lost a white bottle with a green label"}`，同样要求 JSON 和 `X-Requested-With: lost-found-box`。描述最长500字符，请求体最大16KiB。结果为 `{matches:[{item,reason}],searched_count,pending_count}`。未生成有效标签的记录暂不进入搜索，会在界面提示数量；无候选返回空列表，API错误显示失败且保留描述。
+
+当前课堂版一次比较全部有效标签记录，上限200条，超过会明确拒绝而不会只搜部分记录。搜索并发上限1，无自动云端重试。模型返回的候选ID必须属于本次真实库存，重复或不存在的ID会被拒绝。自然语言/备注作为数据处理；它们不会修改数据库或触发开锁。
+
+当前仍无领取状态管理，所有已登记并完成标签的记录都可搜索。AI匹配不验证所有权，领取需要工作人员核对。搜索依赖已有标签和备注：如果标签漏掉某个细节，仅描述这个细节可能无法找到。原生 iPad 应用可通过下述接口将录音转为描述，再调用搜索；现有网页仍使用文字输入。
+
+## 短录音转文字
+
+`POST /api/transcribe` 接收 JSON `{"audio":"标准 Base64 编码的 WAV 文件","mime_type":"audio/wav"}`，要求 `Content-Type: application/json` 和 `X-Requested-With: lost-found-box`，沿用同源及请求长度校验。成功只返回 `{"text":"a blue water bottle"}`。接口只转写录音，不自动搜索、登记物品或改变数据库。
+
+录音必须是单声道、16 kHz、16-bit PCM WAV，时长0.3–30.5秒，完整文件最多1,000,000字节，JSON请求体最多1,400,000字节。服务校验实际 RIFF 结构、完整帧数据和严格标准 Base64，拒绝截断文件、格式伪装和不一致的长度。结果去除首尾空白后须为1–500个 Unicode 码点；未识别到语音或描述过长返回422，提示重新录音或简短描述。
+
+`speech.py` 复用图片识别的服务端 API Key 和北京地域主机，将兼容接口路径替换为 `/api/v1/services/aigc/multimodal-generation/generation`，固定调用 `qwen3-asr-flash`，不使用视觉模型名。已有 Key 还需具备该 ASR 模型的调用权限和额度；`GET /api/ai/status` 不验证 ASR 权限。配置和 Key 都不会发送到 iPad，不能把 Key 写入应用。
+
+收到录音后会把音频发送到阿里百炼转写。此服务不把录音或转写结果写入文件、数据库或日志；后续用户主动提交搜索时，描述会像文字搜索一样发送至百炼。云服务的数据处理以其服务约定为准。应用应在访客结束操作后清除尚未提交的描述和录音。
+
+转写有独立的单请求并发限制，忙时返回503，不占用图片识别或语义搜索队列；配置缺失也返回503。云请求设置30秒 socket 超时、最多64 KiB响应、禁止重定向及环境代理，无自动重试。超时返回504，其余云端失败返回502，只显示简短英文错误，不透传云端原始响应或凭据。30秒 socket 超时不是整体耗时的硬实时保证；主动重试可能产生新的调用费用。
+
+新增接口的自动测试使用临时假凭据和模拟云响应，不代表实际 ASR 权限或树莓派部署已验证。更新树莓派时须同时复制 `speech.py` 并重启服务，再核对真实 iPad 录音与云端转写。参考：[阿里百炼录音文件识别（Qwen ASR）](https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference)。
+
+### 语音部署验证（2026-10-21）
+
+项目树莓派已更新 `server.py` / `speech.py` 并重启服务。经受信任 CA 与域名校验的 `https://work123.local:8443/api/transcribe` 返回 HTTP 200，合成中文短音频完整转写；未新增物品记录。更新前服务备份位于 `~/lost-found-box/backups/before-voice-20261021-092824/`。原生 iPad App 需用更新后的 Xcode 工程重新 Build/Run。
+
+## 第一把门锁单次测试
+
+当前脚本用于用户新购的、明确支持树莓派 3.3V GPIO 控制且使用 5V 供电的四路继电器成品板。第一路必须设置为 HIGH 触发：GPIO17 高电平开锁，低电平停止通电。若模块有 HIGH/LOW 跳线，需要在断电时手动设置，程序不能改变硬件跳线。
+
+接线前提：树莓派物理第 11 针（BCM GPIO17）直接接新板 IN1，第 6 针 GND 与继电器 GND/DC−、外接电源负极共地；继电器供电接外接 5V，树莓派继续通过 USB-C 供电，不把两路电源的正极并联。锁使用外接 5V 电源和 COM1/NO1 常开触点。成品板上的 VCC/JD-VCC 等端子应按该板说明连接。
+
+这个直接驱动接法不适用于此前未经确认兼容 3.3V 的旧 5V 模块，也不能在 LOW 触发设置下运行本脚本。旧板曾在 GPIO 低电平时持续给锁供电，属于接法与程序触发极性不匹配。
+
+在树莓派终端执行：
+
+```bash
+# 只检查型号与引脚占用，不驱动继电器
+python3 ~/lost-found-box/tools/test_lock_once.py
+
+# 第一把锁通电一次，约 0.5 秒，随后恢复低电平
+python3 ~/lost-found-box/tools/test_lock_once.py --fire
+```
+
+程序使用树莓派已安装的 `lgpio`，固定只控制 GPIO17；同一脚本同时只能运行一个开锁测试，两次测试至少间隔 30 秒，不自动重试。退出、Ctrl+C 和可捕获的终止信号会尝试停止脉冲并恢复低电平。软件控制无法替代硬件限时保护，也不保证断电、系统冻结或 SIGKILL 后的状态。该锁通电释放、关门后机械锁定，不能靠持续通电保持开门。
+
+2026-10-21 更换继电器板后的测试：用户告知已接好并要求测试，脚本已更新并在树莓派执行一次；GPIO 采样记录 HIGH 在 0.4359 秒、LOW 在 0.9377 秒，约 0.502 秒后恢复低电平。随后 `pinctrl get 17` 确认引脚为 LOW。10 项模拟 GPIO 测试通过，包括默认只检查、单次脉冲、异常清理和立即重试的冷却限制。用户现场反馈锁弹开但仍不能重新扣住，开锁后释放供电的验收未通过。已要求断开外接锁电源，需核对新板实际型号、HIGH/LOW 跳线及 COM/NO/NC 接点后再试；3.3V 输入兼容性不代表 HIGH 触发。未接锁状态反馈，GPIO 读回不代表门锁状态。此脚本尚未接入网页或 AI 自动开锁。

@@ -1,0 +1,14 @@
+[Unit]
+Description=Lost and Found public CA setup page (no item data)
+After=network.target
+
+[Service]
+WorkingDirectory=%h/lost-found-box
+ExecStart=/usr/bin/python3 %h/lost-found-box/tools/certificate_portal.py --ca %h/lost-found-box/certs/ca.crt --port 8088 --app-url https://work123.local:8443
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
