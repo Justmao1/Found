@@ -35,9 +35,19 @@ struct LockerIntegration {
         try String(contentsOf: audit, encoding: .utf8).split(separator: "\n").count
     }
 
+    private static func sameOperation(_ first: LockerOperation, _ second: LockerOperation) -> Bool {
+        // Live feedback timestamps may change between otherwise idempotent reads.
+        first.id == second.id && first.kind == second.kind && first.itemID == second.itemID &&
+        first.compartmentID == second.compartmentID && first.state == second.state && first.error == second.error
+    }
+
+    private static func setDoor(_ state: String, at control: URL) throws {
+        try JSONEncoder().encode(["state": state]).write(to: control, options: .atomic)
+    }
+
     private static func run() async throws {
-        guard CommandLine.arguments.count == 4 else {
-            throw LockerIntegrationFailure(message: "Usage: locker-integration <loopback-origin> <items.json> <pulse-audit>")
+        guard CommandLine.arguments.count == 5 else {
+            throw LockerIntegrationFailure(message: "Usage: locker-integration <loopback-origin> <items.json> <pulse-audit> <door-control>")
         }
         let origin = try ServerAddress.parse(CommandLine.arguments[1])
         try require(origin.host == "127.0.0.1" && origin.scheme == "http", "Only the local fixture server is allowed")
@@ -45,6 +55,7 @@ struct LockerIntegration {
             from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])))
         try require(ids.count == 7, "Expected six recognized fixtures and one unrecognized fixture")
         let audit = URL(fileURLWithPath: CommandLine.arguments[3])
+        let doorControl = URL(fileURLWithPath: CommandLine.arguments[4])
         let config = URLSessionConfiguration.ephemeral
         config.connectionProxyDictionary = [:]
         let session = URLSession(configuration: config)
@@ -57,6 +68,10 @@ struct LockerIntegration {
         try require(!ai.configured && initial.enabled && initial.driver == "simulated", "Expected AI-disabled simulated station")
         try require(initial.compartments.map(\.id) == ["01", "02", "03", "04"], "Wrong compartment IDs")
         try require(initial.compartments.allSatisfy { $0.state == "free" && $0.itemID == nil }, "Slots must start empty")
+        try require(initial.compartments[0].door?.state == .open && initial.compartments[0].door?.gpio == 12,
+                    "Compartment 01 must expose real-format feedback on GPIO12")
+        try require(initial.compartments.dropFirst().allSatisfy { $0.door?.enabled == false },
+                    "Unwired compartments must not claim door feedback")
         let initialAvailable = try await client.items(availableOnly: true)
         let initialSearch = try await client.search(query: "蓝色钥匙扣")
         try require(initialAvailable.total == 0 && initialSearch.searchedCount == 0, "Unstored legacy items leaked into public inventory")
@@ -89,7 +104,7 @@ struct LockerIntegration {
         for request in deposits {
             let replay = try await client.beginLockerOperation(request)
             let lookup = try await client.lockerOperation(id: request.requestID.uppercased())
-            try require(replay.operation == lookup.operation, "Replay and recovery lookup disagree")
+            try require(sameOperation(replay.operation, lookup.operation), "Replay and recovery lookup disagree")
         }
         let replayPulses = try pulseCount(audit)
         try require(replayPulses == 4, "Replays or read-only recovery emitted additional opening commands")
@@ -108,11 +123,22 @@ struct LockerIntegration {
         try require(fullPulses == 4, "Full capacity must not send an opening command")
         print("PASS capacity: fifth deposit returns HTTP 409 without an extra pulse")
 
-        for request in deposits {
+        try await expectConflict { _ = try await client.completeLockerOperation(id: deposits[0].requestID) }
+        let blockedDeposit = try await client.lockerOperation(id: deposits[0].requestID)
+        try require(blockedDeposit.operation.door?.state == .open && blockedDeposit.item.status == "deposit_pending",
+                    "An open door must preserve the unfinished deposit")
+        try setDoor("closed", at: doorControl)
+        print("PASS door/deposit: 01 open rejects completion; closed feedback is required; unwired slots stay manual")
+
+        for (index, request) in deposits.enumerated() {
             let result = try await client.completeLockerOperation(id: request.requestID)
+            if index == 0 {
+                try require(result.operation.door?.state == .closed, "Closed feedback was not decoded")
+                try setDoor("open", at: doorControl)
+            }
             let repeatCompletion = try await client.completeLockerOperation(id: request.requestID)
             try require(result.operation.state == "completed" && result.item.isStored, "Deposit confirmation failed")
-            try require(result.operation == repeatCompletion.operation, "Completion acknowledgement is not idempotent")
+            try require(sameOperation(result.operation, repeatCompletion.operation), "Completion acknowledgement is not idempotent")
         }
         let stored = try await client.items(availableOnly: true)
         let matches = try await client.search(query: "蓝色钥匙扣")
@@ -138,7 +164,12 @@ struct LockerIntegration {
         try require(retrievalPulses == 5, "Retrieval replay opened the door twice")
         print("PASS retrieval: selected item's slot opens once and remains assigned until confirmation")
 
+        try await expectConflict { _ = try await client.completeLockerOperation(id: retrieval.requestID) }
+        let blockedCollection = try await client.lockerOperation(id: retrieval.requestID)
+        try require(blockedCollection.item.status == "retrieval_pending", "Open door released the item or slot")
+        try setDoor("closed", at: doorControl)
         let collected = try await client.completeLockerOperation(id: retrieval.requestID)
+        print("PASS door/collection: open feedback keeps assignment; closing permits explicit collection")
         _ = try await client.completeLockerOperation(id: retrieval.requestID)
         try require(collected.item.status == "collected" && collected.item.compartmentID == nil,
                     "Retrieval confirmation must mark collected and clear the slot assignment")
@@ -186,6 +217,6 @@ struct LockerIntegration {
         let finalPulses = try pulseCount(audit)
         try require(finalPulses == 10, "Expected exactly ten explicit starts; resolution/replay must not pulse")
         print("PASS reconciliation: explicit stored/collected/empty outcomes keep item and slot states consistent")
-        print("RESULT: 10 real HTTP workflow checks passed; exactly 10 simulated opening commands")
+        print("RESULT: 12 real HTTP workflow checks passed; exactly 10 simulated opening commands")
     }
 }

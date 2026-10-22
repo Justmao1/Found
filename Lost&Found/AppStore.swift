@@ -5,6 +5,7 @@ import Observation
 @Observable
 final class AppStore {
     enum Tab: Hashable { case home, report, find, items, settings }
+    enum DoorFeedbackState: Equatable { case manual, checking, open, closed, unavailable }
     var selectedTab: Tab = .home
     private(set) var visitorRevision = 0
     private(set) var idleSecondsRemaining: Int?
@@ -37,6 +38,12 @@ final class AppStore {
     private(set) var isLockerBusy = false
     private(set) var lockerNeedsStaff = false
     private(set) var storedItems: [FoundItem] = []
+    private(set) var isDoorMonitoringActive = false
+    private var doorReading: LockerDoor?
+    private var doorReadingAt: Date?
+    private var doorReadFailed = false
+    private var doorFeedbackRequired = false
+    @ObservationIgnored private var doorRefreshSequence = 0
     @ObservationIgnored private var pendingLocker: PendingLockerCommand?
     @ObservationIgnored private var lockerRefreshSequence = 0
     @ObservationIgnored private let lockerJournalURL: URL
@@ -73,6 +80,52 @@ final class AppStore {
     }
     var hasPendingLocker: Bool { pendingLocker != nil }
     var availableItems: [FoundItem] { lockerStatus?.enabled == false ? items : storedItems }
+    var requiresDoorFeedback: Bool {
+        guard let operation = lockerOperation else { return false }
+        return doorFeedbackRequired || operation.door?.enabled == true || lockerStatus?.compartments.first {
+            $0.id == operation.compartmentID
+        }?.door?.enabled == true
+    }
+
+    func doorFeedbackState(for operation: LockerOperation, at date: Date = Date()) -> DoorFeedbackState {
+        guard lockerOperation?.id == operation.id, requiresDoorFeedback else { return .manual }
+        guard isDoorMonitoringActive else { return .checking }
+        guard !doorReadFailed else { return .unavailable }
+        guard let reading = doorReading, let received = doorReadingAt else { return .checking }
+        guard date.timeIntervalSince(received) < 3 else { return .unavailable }
+        switch reading.state {
+        case .closed where reading.enabled && reading.error == nil: return .closed
+        case .open where reading.enabled && reading.error == nil: return .open
+        case .unknown where reading.enabled && reading.error == nil: return .checking
+        default: return .unavailable
+        }
+    }
+
+    func canCompleteLockerOperation(_ operation: LockerOperation, at date: Date = Date()) -> Bool {
+        guard lockerOperation?.id == operation.id, operation.state == "awaiting_confirmation",
+              !isLockerBusy, !lockerNeedsStaff else { return false }
+        switch doorFeedbackState(for: operation, at: date) {
+        case .manual, .closed: return true
+        default: return false
+        }
+    }
+
+    func setDoorMonitoringActive(_ active: Bool) {
+        guard active != isDoorMonitoringActive else { return }
+        isDoorMonitoringActive = active
+        invalidateDoorReading()
+    }
+
+    /// The foreground clock also expires a reading while a slow request is still in flight.
+    func expireDoorReading(at date: Date = Date()) {
+        guard let received = doorReadingAt, date.timeIntervalSince(received) >= 3 else { return }
+        doorReading = nil; doorReadingAt = nil; doorReadFailed = true
+    }
+
+    private func invalidateDoorReading() {
+        doorRefreshSequence += 1
+        doorReading = nil; doorReadingAt = nil; doorReadFailed = false
+    }
 
     @discardableResult
     func beginVisitorTask(_ tab: Tab) -> Bool {
@@ -87,6 +140,8 @@ final class AppStore {
     @discardableResult
     func endVisitorSession() -> Bool {
         guard !isSaving, !isLockerBusy else { return false }
+        invalidateDoorReading()
+        doorFeedbackRequired = false
         lockerNeedsStaff = hasPendingLocker
         lockerOperation = nil; lockerItem = nil; lockerError = nil
         visitorRevision += 1
@@ -147,6 +202,8 @@ final class AppStore {
         let url = try ServerAddress.parse(address)
         guard url.absoluteString != serverAddress else { return }
         guard !isSaving, !isLockerBusy, submission == nil, !hasPendingLocker else { throw SettingsError.pendingUpload }
+        invalidateDoorReading()
+        doorFeedbackRequired = false
         revision += 1
         visitorRevision += 1
         refreshSequence += 1
@@ -296,6 +353,10 @@ final class AppStore {
             guard revision == server, sequence == lockerRefreshSequence, !Task.isCancelled else { return }
             // Availability must not wait for a second request that the view may cancel.
             lockerStatus = status; storedItems = []
+            if let operation = lockerOperation,
+               status.compartments.first(where: { $0.id == operation.compartmentID })?.door?.enabled == true {
+                doorFeedbackRequired = true
+            }
             guard status.enabled else { return }
             do {
                 let available = try await api.items(availableOnly: true).items
@@ -387,10 +448,58 @@ final class AppStore {
         await refreshLockers()
     }
 
+    /// Poll the current visit only. This never submits a command or renews visitor activity.
+    func monitorLockerDoor() async {
+        let server = revision
+        let visitor = visitorRevision
+        let operationID = lockerOperation?.id
+        while !Task.isCancelled, isDoorMonitoringActive, revision == server, visitorRevision == visitor,
+              lockerOperation?.id == operationID, lockerOperation?.state == "awaiting_confirmation",
+              requiresDoorFeedback, !lockerNeedsStaff {
+            await refreshLockerDoor()
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+        }
+    }
+
+    func refreshLockerDoor() async {
+        guard isDoorMonitoringActive, !isLockerBusy, !lockerNeedsStaff, requiresDoorFeedback,
+              let operation = lockerOperation, operation.state == "awaiting_confirmation",
+              let command = pendingLocker, command.request.requestID == operation.id,
+              command.serverAddress == serverAddress, !Task.isCancelled else { return }
+        let server = revision
+        let visitor = visitorRevision
+        doorRefreshSequence += 1
+        let sequence = doorRefreshSequence
+        let requestedAt = Date()
+        do {
+            let response = try await client.lockerOperation(id: operation.id)
+            guard revision == server, visitorRevision == visitor, sequence == doorRefreshSequence,
+                  isDoorMonitoringActive, lockerOperation?.id == operation.id, !isLockerBusy,
+                  !lockerNeedsStaff, !Task.isCancelled else { return }
+            try validateLockerResponse(response, expected: command.request)
+            if response.operation.state != "awaiting_confirmation" {
+                try applyLockerResponse(response, expected: command.request)
+                return
+            }
+            // Do not refresh inventory or mutate the operation journal on every sensor read.
+            // A missing payload from a previously configured sensor must not enable manual completion.
+            doorReading = response.operation.door
+            doorReadingAt = requestedAt
+            doorReadFailed = response.operation.door == nil
+            expireDoorReading()
+        } catch {
+            guard revision == server, visitorRevision == visitor, sequence == doorRefreshSequence,
+                  isDoorMonitoringActive, lockerOperation?.id == operation.id, !Task.isCancelled else { return }
+            doorReading = nil; doorReadingAt = nil; doorReadFailed = true
+        }
+    }
+
     func completeLockerOperation() async {
         guard !isLockerBusy, !lockerNeedsStaff, let operation = lockerOperation,
               operation.state == "awaiting_confirmation", let command = pendingLocker,
-              command.serverAddress == serverAddress, command.request.requestID == operation.id else { return }
+              command.serverAddress == serverAddress, command.request.requestID == operation.id,
+              canCompleteLockerOperation(operation) else { return }
+        invalidateDoorReading()
         isLockerBusy = true; lockerError = nil
         defer { isLockerBusy = false; recordVisitorActivity() }
         do {
@@ -414,13 +523,21 @@ final class AppStore {
         await refreshLockers()
     }
 
-    private func applyLockerResponse(_ response: LockerOperationResponse, expected: LockerOperationRequest) throws {
+    private func validateLockerResponse(_ response: LockerOperationResponse, expected: LockerOperationRequest) throws {
         guard response.operation.id == expected.requestID, response.operation.itemID == expected.itemID,
               response.operation.kind == expected.kind, response.item.id == expected.itemID,
               ["01", "02", "03", "04"].contains(response.operation.compartmentID),
               ["actuating", "awaiting_confirmation", "completed", "uncertain"].contains(response.operation.state) else {
             throw APIError.invalidResponse
         }
+    }
+
+    private func applyLockerResponse(_ response: LockerOperationResponse, expected: LockerOperationRequest) throws {
+        try validateLockerResponse(response, expected: expected)
+        invalidateDoorReading()
+        doorFeedbackRequired = response.operation.door?.enabled == true || lockerStatus?.compartments.first {
+            $0.id == response.operation.compartmentID
+        }?.door?.enabled == true || (lockerOperation?.id == response.operation.id && doorFeedbackRequired)
         lockerOperation = response.operation; lockerItem = response.item
         lockerError = response.operation.error
         refreshSequence += 1; isRefreshing = false
@@ -441,11 +558,13 @@ final class AppStore {
                     case "recovery": state = "recovery"
                     default: return compartment
                     }
-                    return LockerCompartment(id: compartment.id, state: state, itemID: response.item.id)
+                    return LockerCompartment(id: compartment.id, state: state, itemID: response.item.id,
+                                             door: response.operation.door ?? compartment.door)
                 }
                 if response.operation.state == "completed", response.item.compartmentID == nil,
                    ["recorded", "collected"].contains(response.item.status), compartment.itemID == response.item.id {
-                    return LockerCompartment(id: compartment.id, state: "free")
+                    return LockerCompartment(id: compartment.id, state: "free",
+                                             door: response.operation.door ?? compartment.door)
                 }
                 return compartment
             }

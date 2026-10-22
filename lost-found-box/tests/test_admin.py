@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 import uuid
 
 import iot_admin
+import door_feedback
 import test_lockers
 import test_server
 import vision
@@ -283,7 +284,8 @@ class AdminHTTPTests(unittest.TestCase):
         self.assertEqual(body["vibration"]["events"], [])
         slots = body["lockers"]["compartments"]
         self.assertEqual([(slot["gpio"], slot["pin"]) for slot in slots], [(17, 11), (26, 37), (13, 33), (5, 29)])
-        self.assertTrue(all(slot["door_state"] == "unknown" and slot["output_level"] is None for slot in slots))
+        self.assertTrue(all(slot["door_state"] == "not_configured" and slot["output_level"] is None for slot in slots))
+        self.assertTrue(all(slot["door"]["enabled"] is False for slot in slots))
         self.assertEqual(slots[0]["item"]["id"], first)
         self.assertIsNone(slots[1]["item"])
         raw = json.dumps(body)
@@ -333,7 +335,8 @@ class AdminHTTPTests(unittest.TestCase):
         self.assertIsNone(body["operation"]["item_id"])
         self.assertEqual(self.get("/api/admin/items")[2]["total"], 0)
         slot = self.get("/api/lockers")[2]["compartments"][3]
-        self.assertEqual(slot, {"id": "04", "state": "free", "item_id": None})
+        self.assertEqual(slot, {"id": "04", "state": "free", "item_id": None,
+                                "door": door_feedback.not_configured()})
         self.assertEqual(self.driver.pulses, ["04"])
 
     def test_manual_open_accepts_no_reason_and_empty_reason_replays_without_pulse(self):

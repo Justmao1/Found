@@ -44,6 +44,7 @@ struct ContentView: View {
         .onChange(of: store.query) { _, _ in store.recordVisitorActivity() }
         .onChange(of: scenePhase) { _, phase in
             UIApplication.shared.isIdleTimerDisabled = phase == .active
+            store.setDoorMonitoringActive(phase == .active)
             if phase == .background {
                 showingStaff = false
                 _ = store.endVisitorSession()
@@ -55,8 +56,14 @@ struct ContentView: View {
         .onChange(of: store.isLockerBusy) { _, busy in
             if !busy && scenePhase == .background { _ = store.endVisitorSession() }
         }
-        .onAppear { UIApplication.shared.isIdleTimerDisabled = scenePhase == .active }
-        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
+        .onAppear {
+            UIApplication.shared.isIdleTimerDisabled = scenePhase == .active
+            store.setDoorMonitoringActive(scenePhase == .active)
+        }
+        .onDisappear {
+            UIApplication.shared.isIdleTimerDisabled = false
+            store.setDoorMonitoringActive(false)
+        }
         .task(id: "\(scenePhase)-\(store.revision)-\(store.visitorRevision)") {
             guard scenePhase == .active else { return }
             store.checkVisitorInactivity()
@@ -66,6 +73,7 @@ struct ContentView: View {
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                store.expireDoorReading()
                 if showingStaff {
                     if Date().timeIntervalSince(lastInteraction) >= 120 { showingStaff = false }
                 } else {
@@ -80,6 +88,10 @@ struct ContentView: View {
                 guard !Task.isCancelled else { return }
                 if store.hasPendingItems { await store.refresh() }
             }
+        }
+        .task(id: "\(scenePhase)-\(store.isDoorMonitoringActive)-\(store.revision)-\(store.visitorRevision)-\(store.lockerOperation?.id ?? "")-\(store.lockerOperation?.state ?? "")-\(store.requiresDoorFeedback)") {
+            guard scenePhase == .active else { return }
+            await store.monitorLockerDoor()
         }
     }
 }

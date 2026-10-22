@@ -27,6 +27,7 @@ import speech
 import lockers
 import iot_admin
 import vibration
+import door_feedback
 
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
@@ -136,7 +137,8 @@ class PhotoServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, data_dir, auto_recognize=True, locker_driver=None,
-                 vibration_enabled=False, vibration_api=None):
+                 vibration_enabled=False, vibration_api=None, door_feedback_enabled=False,
+                 door_feedback_api=None, door_monitor=None):
         directory = Path(data_dir)
         directory.mkdir(parents=True, exist_ok=True)
         self.db_path = directory / "items.sqlite3"
@@ -168,7 +170,9 @@ class PhotoServer(ThreadingHTTPServer):
             db.commit()
         finally:
             db.close()
-        self.lockers = lockers.LockerStore(self.connect_db, directory, locker_driver)
+        self.door_feedback = door_monitor if door_monitor is not None else door_feedback.DoorFeedbackMonitor(
+            enabled=door_feedback_enabled, api=door_feedback_api)
+        self.lockers = lockers.LockerStore(self.connect_db, directory, locker_driver, door_monitor=self.door_feedback)
         self.vibration = vibration.VibrationMonitor(self.connect_db, enabled=vibration_enabled, api=vibration_api)
         self.lockers.before_pulse = lambda _compartment: self.vibration.suppress_for(2)
         self.admin = iot_admin.Administration(self, item_json)
@@ -178,6 +182,7 @@ class PhotoServer(ThreadingHTTPServer):
                                               name="lost-found-recognition")
             self.ai_worker.start()
             self.vibration.start()
+            self.door_feedback.start()
             if auto_recognize and vision.configuration_status()["configured"]:
                 db = self.connect_db()
                 try:
@@ -219,7 +224,7 @@ class PhotoServer(ThreadingHTTPServer):
         try:
             db.execute("BEGIN")
             current = db.execute("SELECT * FROM locker_operations WHERE id=?", (operation["id"],)).fetchone()
-            return {"operation": lockers.operation_json(current),
+            return {"operation": self.lockers.operation_json(current),
                     "item": item_json(self.fetch_item(db, current["item_id"]))}
         finally:
             db.close()
@@ -354,6 +359,7 @@ class PhotoServer(ThreadingHTTPServer):
                 self.ai_queue.task_done()
 
     def server_close(self):
+        self.door_feedback.close()
         self.vibration.close()
         self.ai_stopping.set()
         super().server_close()
@@ -742,7 +748,8 @@ class PhotoHandler(BaseHTTPRequestHandler):
 
 
 def build_server(host, port, data_dir, cert=None, key=None, auto_recognize=True,
-                 locker_mode=None, locker_driver=None, vibration_enabled=None, vibration_api=None):
+                 locker_mode=None, locker_driver=None, vibration_enabled=None, vibration_api=None,
+                 door_feedback_enabled=None, door_feedback_api=None, door_monitor=None):
     if bool(cert) != bool(key):
         raise ValueError("--cert 和 --key 必须一起提供")
     try:
@@ -764,8 +771,15 @@ def build_server(host, port, data_dir, cert=None, key=None, auto_recognize=True,
         if configured not in ("0", "1"):
             raise ValueError("LOST_FOUND_VIBRATION_ENABLED must be 0 or 1.")
         vibration_enabled = configured == "1"
+    if door_feedback_enabled is None:
+        configured = os.environ.get("LOST_FOUND_DOOR_FEEDBACK_ENABLED", "0")
+        if configured not in ("0", "1"):
+            raise ValueError("LOST_FOUND_DOOR_FEEDBACK_ENABLED must be 0 or 1.")
+        door_feedback_enabled = configured == "1"
     server = PhotoServer((host, port), data_dir, auto_recognize=auto_recognize, locker_driver=driver,
-                         vibration_enabled=vibration_enabled, vibration_api=vibration_api)
+                         vibration_enabled=vibration_enabled, vibration_api=vibration_api,
+                         door_feedback_enabled=door_feedback_enabled, door_feedback_api=door_feedback_api,
+                         door_monitor=door_monitor)
     if context:
         try:
             server.socket = context.wrap_socket(server.socket, server_side=True)

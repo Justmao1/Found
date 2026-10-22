@@ -100,8 +100,12 @@ struct LockerOperationPanel: View {
             } else if operation.state == "awaiting_confirmation" {
                 Text(depositing ? "Place the item inside, then close the door." : "Take your item, then close the door.")
                     .font(.title3.weight(.medium)).multilineTextAlignment(.center)
-                Text("An unlock request was sent. If the door did not open, ask station staff for help.")
-                    .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                if store.requiresDoorFeedback {
+                    LockerDoorFeedbackView(operation: operation)
+                } else {
+                    Text("An unlock request was sent. If the door did not open, ask station staff for help.")
+                        .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }
                 if showsActions { LockerOperationAction(operation: operation) }
             } else if operation.state == "actuating" {
                 ProgressView("Sending the unlock request…")
@@ -125,18 +129,74 @@ struct LockerOperationPanel: View {
     }
 }
 
+private struct LockerDoorFeedbackView: View {
+    let operation: LockerOperation
+    @Environment(AppStore.self) private var store
+
+    private var state: AppStore.DoorFeedbackState { store.doorFeedbackState(for: operation) }
+    private var title: String {
+        switch state {
+        case .closed: "Door closed"
+        case .open: "Door not closed"
+        case .manual, .checking: "Checking the door…"
+        case .unavailable: "Door status unavailable"
+        }
+    }
+    private var symbol: String {
+        switch state {
+        case .closed: "checkmark.circle.fill"
+        case .open: "door.left.hand.open"
+        case .manual, .checking: "door.left.hand.closed"
+        case .unavailable: "wifi.exclamationmark"
+        }
+    }
+    private var detail: String {
+        switch state {
+        case .closed:
+            operation.kind == "deposit" ? "Confirm once the item is inside." : "Confirm once you have taken your item."
+        case .open: "Close compartment \(operation.compartmentID) to continue."
+        case .manual, .checking: "The station is reading the door sensor."
+        case .unavailable: "Check the connection or ask station staff for help."
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            Image(systemName: symbol)
+                .font(.system(size: 32, weight: .medium))
+                .foregroundStyle(state == .closed ? FoundStyle.accent : state == .open ? Color.orange : Color.secondary)
+                .frame(width: 44).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(.title2.weight(.semibold))
+                Text(detail).font(.subheadline).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(20)
+        .background(state == .closed ? FoundStyle.soft : FoundStyle.background,
+                    in: RoundedRectangle(cornerRadius: 20))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("lockerDoorStatus")
+    }
+}
+
 /// Report pins this action outside its scrollable content; other screens use it inside their card.
 struct LockerOperationAction: View {
     let operation: LockerOperation
     @Environment(AppStore.self) private var store
     private var depositing: Bool { operation.kind == "deposit" }
+    private var confirmationTitle: String {
+        if store.requiresDoorFeedback {
+            return depositing ? "I’ve placed the item inside" : "I’ve taken my item"
+        }
+        return depositing ? "I’ve placed it inside & closed the door" : "I’ve taken my item & closed the door"
+    }
 
     var body: some View {
         if operation.state == "completed" {
             PrimaryAction(title: "Finish & Return Home", symbol: "house.fill") { _ = store.endVisitorSession() }
                 .accessibilityIdentifier("finishLockerVisit")
         } else if operation.state == "awaiting_confirmation" {
-            PrimaryAction(title: depositing ? "I’ve placed it inside & closed the door" : "I’ve taken my item & closed the door",
+            PrimaryAction(title: confirmationTitle,
                           symbol: depositing ? "tray.and.arrow.down.fill" : "checkmark.circle.fill", busy: store.isLockerBusy) {
                 let operationID = operation.id
                 let visitor = store.visitorRevision
@@ -147,7 +207,7 @@ struct LockerOperationAction: View {
                     await store.completeLockerOperation()
                 }
             }
-            .disabled(store.isLockerBusy)
+            .disabled(!store.canCompleteLockerOperation(operation))
             .multilineTextAlignment(.center)
             .accessibilityIdentifier(depositing ? "confirmItemStored" : "confirmItemCollected")
         } else if operation.state == "actuating" {

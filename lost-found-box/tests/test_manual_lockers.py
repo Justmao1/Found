@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import uuid
 
 import lockers
+import door_feedback
 import vision
 import search
 import test_server as server_tests
@@ -87,7 +88,8 @@ class ManualLockerTests(unittest.TestCase):
         self.assertEqual(operation["state"], "completed")
         self.assertEqual(operation["item_id"], visitor["item_id"])
         self.assert_error(409, self.visitor_start, visitor["item_id"], "deposit")
-        self.assertEqual(self.slot(), {"id": "01", "state": "occupied", "item_id": visitor["item_id"]})
+        self.assertEqual(self.slot(), {"id": "01", "state": "occupied", "item_id": visitor["item_id"],
+                                      "door": door_feedback.not_configured()})
         db = self.connect()
         self.assertEqual(db.execute("SELECT status FROM item_storage WHERE item_id=?", (visitor["item_id"],)).fetchone()[0], "stored")
         db.close()

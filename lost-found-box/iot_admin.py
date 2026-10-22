@@ -286,7 +286,7 @@ class Administration:
             db.execute("BEGIN")
             manual = [lockers.manual_operation_json(row) for row in db.execute(
                 "SELECT * FROM manual_openings WHERE state!='completed' ORDER BY created_at,id")]
-            snapshot["operations"] = [lockers.operation_json(row) for row in db.execute(
+            snapshot["operations"] = [server.lockers.operation_json(row) for row in db.execute(
                 "SELECT * FROM locker_operations WHERE state!='completed' ORDER BY created_at,id")]
             counts = dict(db.execute("SELECT COALESCE(item_storage.status,'recorded'),COUNT(*) FROM items "
                                      "LEFT JOIN item_storage ON item_storage.item_id=items.id GROUP BY 1").fetchall())
@@ -295,6 +295,7 @@ class Administration:
             # Read the slot rows and attached inventory in the same DB snapshot.
             snapshot["compartments"] = [dict(row) for row in db.execute("SELECT id,state,item_id FROM compartments ORDER BY id")]
             for slot in snapshot["compartments"]:
+                slot["door"] = server.lockers.door_snapshot(slot["id"])
                 gpio = lockers.GPIO_MAP[slot["id"]]
                 latest = pulses.get(slot["id"], 0)
                 if snapshot["driver"] == "gpio":
@@ -306,7 +307,7 @@ class Administration:
                 row = db.execute(ITEM_SELECT + ITEM_FROM + " WHERE items.id=?", (slot["item_id"],)).fetchone() if slot["item_id"] else None
                 slot.update(gpio=gpio, pin=PHYSICAL_PINS[slot["id"]], output_level=levels.get(gpio),
                             cooldown_remaining_seconds=round(max(0, cooldown - (time.time() - latest)), 1),
-                            door_state="unknown", item=self.serialize_item(row) if row else None)
+                            door_state=slot["door"]["state"], item=self.serialize_item(row) if row else None)
             activity = [dict(row) for row in db.execute("""SELECT id,kind AS type,compartment_id,item_id,state,created_at,
                 NULL AS reason,error FROM locker_operations UNION ALL
                 SELECT id,'manual' AS type,compartment_id,item_id,state,created_at,reason,error FROM manual_openings
@@ -327,5 +328,6 @@ class Administration:
                               "recognition_failed": jobs.get("failed", 0)},
                 "lockers": snapshot, "manual_operations": manual, "activity": activity,
                 "vibration": server.vibration.snapshot(),
-                "capabilities": {"door_sensor": False, "physical_feedback": False,
+                "capabilities": {"door_sensor": server.door_feedback.enabled,
+                                 "physical_feedback": server.door_feedback.enabled,
                                  "vibration_sensor": server.vibration.enabled}}

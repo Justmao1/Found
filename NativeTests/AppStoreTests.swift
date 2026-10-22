@@ -750,13 +750,154 @@ final class LockerStoreTests: XCTestCase {
                              }, operations: operations)
     }
 
-    private func response(for command: LockerOperationRequest, state: String = "awaiting_confirmation") -> LockerOperationResponse {
+    private func response(for command: LockerOperationRequest, state: String = "awaiting_confirmation",
+                          door: LockerDoor? = nil) -> LockerOperationResponse {
         let storedStatus = command.kind == "deposit" ? "stored" : "collected"
         let pendingStatus = command.kind == "deposit" ? "deposit_pending" : "retrieval_pending"
         return LockerOperationResponse(
             operation: LockerOperation(id: command.requestID, kind: command.kind, itemID: command.itemID,
-                                       compartmentID: "01", state: state),
+                                       compartmentID: "01", state: state, door: door),
             item: item(status: state == "completed" ? storedStatus : pendingStatus))
+    }
+
+    private func beginDoorRetrieval(_ harness: StoreHarness, door: LockerDoor,
+                                   includeOperationDoor: Bool = true) async throws -> LockerOperation {
+        let occupied = status(first: LockerCompartment(id: "01", state: "occupied", itemID: itemID, door: door))
+        let buildResponse: (LockerOperationRequest) -> LockerOperationResponse = { [self] in
+            response(for: $0, door: includeOperationDoor ? door : nil)
+        }
+        harness.respond { request in
+            if request.url!.path == "/api/lockers" { return .json(body: try JSONEncoder().encode(occupied)) }
+            if request.url!.path == "/api/locker-operations" {
+                let command = try JSONDecoder().decode(LockerOperationRequest.self, from: readBody(request))
+                return .json(body: try JSONEncoder().encode(buildResponse(command)))
+            }
+            return .json(body: try JSONEncoder().encode(ItemListResponse(items: [], total: 0)))
+        }
+        await harness.store.refreshLockers()
+        XCTAssertTrue(harness.store.beginVisitorTask(.find))
+        harness.store.setDoorMonitoringActive(true)
+        await harness.store.beginRetrieval(for: item(status: "stored"))
+        return try XCTUnwrap(harness.store.lockerOperation)
+    }
+
+    func testOpenDoorPollingNeverPostsRefreshesInventoryOrKeepsTheVisitorAlive() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let door = LockerDoor(enabled: true, gpio: 12, pin: 32, state: .open, level: 1)
+        let operation = try await beginDoorRetrieval(harness, door: door)
+        let reply = LockerOperationResponse(operation: operation, item: item(status: "retrieval_pending"))
+        let requests = LockedValue<[URLRequest]>([])
+        harness.respond { request in
+            requests.modify { $0.append(request) }
+            return .json(body: try JSONEncoder().encode(reply))
+        }
+        harness.store.recordVisitorActivity(at: Date().addingTimeInterval(-151))
+        XCTAssertEqual(harness.store.doorFeedbackState(for: operation), .checking)
+        await harness.store.refreshLockerDoor()
+        XCTAssertEqual(harness.store.doorFeedbackState(for: operation), .open)
+        XCTAssertFalse(harness.store.isLockerBusy)
+        XCTAssertFalse(harness.store.canCompleteLockerOperation(operation))
+        await harness.store.completeLockerOperation()
+        XCTAssertEqual(requests.value.count, 1)
+        XCTAssertEqual(requests.value.first?.httpMethod, "GET")
+        XCTAssertEqual(requests.value.first?.url?.path, "/api/locker-operations/\(operation.id)")
+        harness.store.checkVisitorInactivity()
+        XCTAssertEqual(harness.store.selectedTab, .home, "Sensor reads must not keep a visitor session alive")
+    }
+
+    func testClosedDoorStillNeedsConfirmationAndExpiredOrFailedReadBlocksIt() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let door = LockerDoor(enabled: true, gpio: 12, pin: 32, state: .closed, level: 0)
+        let operation = try await beginDoorRetrieval(harness, door: door)
+        let reply = LockerOperationResponse(operation: operation, item: item(status: "retrieval_pending"))
+        let reads = LockedValue(0)
+        harness.respond { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            reads.modify { $0 += 1 }
+            return .json(body: try JSONEncoder().encode(reply))
+        }
+        await harness.store.refreshLockerDoor()
+        XCTAssertEqual(harness.store.doorFeedbackState(for: operation), .closed)
+        XCTAssertTrue(harness.store.canCompleteLockerOperation(operation))
+        XCTAssertTrue(harness.store.hasPendingLocker, "Closing a door alone must never mark an item collected")
+        XCTAssertEqual(harness.store.lockerOperation?.state, "awaiting_confirmation")
+        XCTAssertFalse(harness.store.canCompleteLockerOperation(operation, at: Date().addingTimeInterval(4)))
+        harness.store.expireDoorReading(at: Date().addingTimeInterval(4))
+        XCTAssertEqual(harness.store.doorFeedbackState(for: operation), .unavailable)
+        await harness.store.completeLockerOperation()
+        XCTAssertEqual(reads.value, 1)
+        await harness.store.refreshLockerDoor()
+        XCTAssertTrue(harness.store.canCompleteLockerOperation(operation))
+        harness.respond { _ in .failure(URLError(.notConnectedToInternet)) }
+        await harness.store.refreshLockerDoor()
+        XCTAssertEqual(harness.store.doorFeedbackState(for: operation), .unavailable)
+        XCTAssertFalse(harness.store.canCompleteLockerOperation(operation))
+    }
+
+    func testConfiguredDoorCannotFallBackToManualWhenItsPayloadDisappears() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let door = LockerDoor(enabled: true, gpio: 12, pin: 32, state: .closed, level: 0)
+        let operation = try await beginDoorRetrieval(harness, door: door, includeOperationDoor: false)
+        XCTAssertTrue(harness.store.requiresDoorFeedback)
+        let reply = LockerOperationResponse(operation: operation, item: item(status: "retrieval_pending"))
+        harness.respond { _ in .json(body: try JSONEncoder().encode(reply)) }
+        await harness.store.refreshLockerDoor()
+        XCTAssertEqual(harness.store.doorFeedbackState(for: operation), .unavailable)
+        XCTAssertFalse(harness.store.canCompleteLockerOperation(operation))
+        harness.respond { _ in .failure(URLError(.notConnectedToInternet)) }
+        await harness.store.refreshLockers()
+        XCTAssertNil(harness.store.lockerStatus)
+        XCTAssertTrue(harness.store.requiresDoorFeedback)
+        XCTAssertFalse(harness.store.canCompleteLockerOperation(operation))
+    }
+
+    func testBackgroundOrSessionResetRejectsAnInFlightClosedReading() async throws {
+        for resetSession in [false, true] {
+            let harness = StoreHarness()
+            defer { harness.close() }
+            let door = LockerDoor(enabled: true, gpio: 12, pin: 32, state: .closed, level: 0)
+            let operation = try await beginDoorRetrieval(harness, door: door)
+            let reply = LockerOperationResponse(operation: operation, item: item(status: "retrieval_pending"))
+            let started = expectation(description: "Door read started")
+            let pending = LockedValue<StubURLProtocol?>(nil)
+            harness.handle { transport in pending.modify { $0 = transport }; started.fulfill() }
+            let reading = Task { await harness.store.refreshLockerDoor() }
+            await fulfillment(of: [started], timeout: 3)
+            XCTAssertFalse(harness.store.isLockerBusy)
+            if resetSession { XCTAssertTrue(harness.store.endVisitorSession()) }
+            else { harness.store.setDoorMonitoringActive(false) }
+            try XCTUnwrap(pending.value).complete(.json(body: JSONEncoder().encode(reply)))
+            await reading.value
+            XCTAssertFalse(harness.store.canCompleteLockerOperation(operation))
+            if resetSession { XCTAssertNil(harness.store.lockerOperation) }
+            else {
+                harness.store.setDoorMonitoringActive(true)
+                XCTAssertEqual(harness.store.doorFeedbackState(for: operation), .checking)
+            }
+        }
+    }
+
+    func testDoorPollingLoopCancelsWithoutAnotherRequestOrBusyState() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let operation = try await beginDoorRetrieval(harness, door: LockerDoor(enabled: true, state: .open))
+        let started = expectation(description: "Polling loop read started")
+        let reads = LockedValue(0)
+        harness.handle { transport in
+            reads.modify { $0 += 1 }
+            XCTAssertEqual(transport.request.httpMethod, "GET")
+            started.fulfill()
+        }
+        let polling = Task { await harness.store.monitorLockerDoor() }
+        await fulfillment(of: [started], timeout: 3)
+        polling.cancel()
+        await polling.value
+        XCTAssertEqual(reads.value, 1)
+        XCTAssertFalse(harness.store.isLockerBusy)
+        XCTAssertFalse(harness.store.canCompleteLockerOperation(operation))
     }
 
     func testDepositWaitsForRecognitionAndDuplicateCallsCannotOpenAgain() async throws {
@@ -964,7 +1105,8 @@ final class LockerStoreTests: XCTestCase {
         let harness = StoreHarness()
         defer { harness.close() }
         let saved = item()
-        let free = status()
+        let door = LockerDoor(enabled: true, gpio: 12, pin: 32, state: .closed, level: 0)
+        let free = status(first: LockerCompartment(id: "01", state: "free", door: door))
         let empty = ItemListResponse(items: [], total: 0)
         harness.respond { request in
             if request.url!.path == "/api/lockers" { return .json(body: try JSONEncoder().encode(free)) }
@@ -998,6 +1140,8 @@ final class LockerStoreTests: XCTestCase {
         await fulfillment(of: [followupStarted], timeout: 3)
         XCTAssertEqual(harness.store.lockerStatus?.compartments.first?.state, "reserved")
         XCTAssertEqual(harness.store.lockerStatus?.compartments.first?.itemID, saved.id)
+        XCTAssertEqual(harness.store.lockerStatus?.compartments.first?.door, door)
+        XCTAssertTrue(harness.store.requiresDoorFeedback)
         XCTAssertEqual(harness.store.lockerStatus?.operations.first?.state, "awaiting_confirmation")
         deposit.cancel()
         await deposit.value

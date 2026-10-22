@@ -76,6 +76,7 @@
 - Loading: show Preparing photo during import and Saving item while the save request is outstanding. Keep the photo visible and block duplicate saves, photo changes and dismissal during saving. Never couple save completion to list refresh or tagging.
 - Empty: helpful explanation and relevant action; never replace errors with “no items”. Four occupied/reserved compartments show Full and ask for staff assistance; no fifth allocation is implied.
 - Locker recovery: persist immutable request identity before transmission. Reads never actuate hardware. Response loss offers status lookup; a deliberate retry uses the same ID. Never auto-release a reserved slot on timeout/background/restart. Staff physically check before resolving stored/collected/empty. Hide previous visitor receipts at session end.
+- Door feedback: compartment 01 uses BCM12 (physical32), LOW = latched, with input pull-up and stable debounce. While awaiting placement/collection confirmation, automatically show an icon and “Door not closed”, “Door closed”, or unavailable/checking state. Poll only during the active foreground visit; polling does not renew inactivity or open a lock. Enable completion for a configured sensor only after a fresh closed reading, with the same rule enforced by the backend. Keep explicit item-placement/removal confirmation: the contact cannot detect an item. Slots 02–04 and older servers retain manual confirmation; never fabricate their door state.
 - Error: keep photo, note or search description; expose retry.
 - Success: preserve photo continuity and distinguish Photo saved, Identifying, Preparing compartment, Ready to place/collect, and Stored/Collected. Show a prominent two-digit compartment number with a short physical instruction. A successful pulse is described as an opening command, not sensor-confirmed door motion. Finishing the task should deliberately return to a clean station entry. Finish returns to a clean home. There is no recent visitor history on home.
 - Disabled: block save without a photo and empty search; explain unavailable camera/AI.
@@ -116,7 +117,7 @@
 - [x] Primary operator: visitor self-service (confirmed).
 - [x] Initial idle policy: 120 + 30 seconds; staff access uses system device authentication. Timing can be adjusted after on-site use.
 - [ ] Fixed camera mounting direction and capture area; do not force a camera orientation before this is known.
-- [x] Physical claiming: four compartments 01→GPIO17, 02→GPIO26, 03→GPIO13, 04→GPIO5; all use S8050 inverters with LOW-trigger relay modules. GPIO5 is disconnected from the prior feedback contact plan. Completion uses deliberate visitor acknowledgement, not a door sensor.
+- [x] Physical claiming: four compartments 01→GPIO17, 02→GPIO26, 03→GPIO13, 04→GPIO5; all use S8050 inverters with LOW-trigger relay modules. GPIO5 is disconnected from the prior feedback contact plan. Compartment 01 now adds GPIO12 latch feedback; visitors still acknowledge item placement/removal. Slots 02–04 have no feedback sensor.
 - [ ] Distribution/device lock-down remains a deployment decision.
 
 ## IoT staff web console · 2026-10-22
@@ -125,6 +126,7 @@
 - Reuse Found green and northeast arrow. Use local inline SVG icons with text labels, high-contrast status badges, subtle neutral surfaces, restrained charts of actual recent samples. No external fonts, packages, mock inventory, or fake sensor readings.
 - Manual opening is a single Open button: no reason field, confirmation dialog or second completion step. A successful pulse completes the command and restores the previous software slot state; item and visitor records stay unchanged. Retain request identity on uncertain responses and query without re-pulsing. Show concise pending controls only when needed. A command result does not measure door position.
 - Poll visible dashboards every three seconds with last successful update; show stale data and disable opening when disconnected. Preserve focused controls, dialogs and typed filters across refreshes. Administrator login uses HttpOnly cookie sessions; never store the password in web storage.
+- Compartment cards distinguish software occupancy, opening output and physical feedback. Show live Door closed / Door open for sensor-equipped 01, checking/unavailable on uncertain readings, and manual confirmation for unwired slots. An offline dashboard must not present a last-known green door badge as live. Staff can still reconcile items explicitly; opening or closing a door never silently changes inventory.
 
 ## Vibration monitoring · 2026-10-22
 - Add one compact overview panel using existing green/neutral cards and icons. Show Monitoring, Shaking detected, Not enabled or Unavailable accurately; never describe GPIO input as measured force or a specific compartment being attacked.

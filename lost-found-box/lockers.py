@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 
+import door_feedback
 import vision
 
 GPIO_MAP = {"01": 17, "02": 26, "03": 13, "04": 5}
@@ -28,9 +29,11 @@ def canonical_uuid(value):
         raise vision.VisionError(400, "A canonical UUID is required.") from None
 
 
-def operation_json(row):
-    return {key: row[key] for key in
-            ("id", "kind", "item_id", "compartment_id", "state", "error")}
+def operation_json(row, door=None):
+    result = {key: row[key] for key in
+              ("id", "kind", "item_id", "compartment_id", "state", "error")}
+    result["door"] = door if door is not None else door_feedback.not_configured()
+    return result
 
 
 def manual_operation_json(row):
@@ -144,12 +147,13 @@ def configured_driver(host, mode=None, mapping=None):
 
 
 class LockerStore:
-    def __init__(self, connect, data_dir, driver=None, before_pulse=None):
+    def __init__(self, connect, data_dir, driver=None, before_pulse=None, door_monitor=None):
         self.connect = connect
         self.directory = Path(data_dir)
         self.driver = driver
         self.enabled = driver is not None
         self.before_pulse = before_pulse
+        self.door_monitor = door_monitor
         self.lock = threading.RLock()
         with self._serialized():
             db = self.connect()
@@ -273,13 +277,21 @@ class LockerStore:
             self.before_pulse(compartment)
         self.driver.pulse(compartment)
 
+    def door_snapshot(self, compartment):
+        return self.door_monitor.snapshot(compartment) if self.door_monitor else door_feedback.not_configured()
+
+    def operation_json(self, row):
+        return operation_json(row, self.door_snapshot(row["compartment_id"]))
+
     def snapshot(self):
         self._recover_if_idle()
         db = self.connect()
         try:
             db.execute("BEGIN")
             compartments = [dict(row) for row in db.execute("SELECT id,state,item_id FROM compartments ORDER BY id")]
-            operations = [operation_json(row) for row in db.execute(
+            for slot in compartments:
+                slot["door"] = self.door_snapshot(slot["id"])
+            operations = [self.operation_json(row) for row in db.execute(
                 "SELECT * FROM locker_operations WHERE state!='completed' ORDER BY created_at,id")]
             return {"enabled": self.enabled, "driver": self.driver.name if self.driver else "disabled",
                     "compartments": compartments, "operations": operations}
@@ -294,7 +306,7 @@ class LockerStore:
             row = db.execute("SELECT * FROM locker_operations WHERE id=?", (identifier,)).fetchone()
             if row is None:
                 raise vision.VisionError(404, "Locker operation not found.")
-            return operation_json(row)
+            return self.operation_json(row)
         finally:
             db.close()
 
@@ -324,7 +336,7 @@ class LockerStore:
                     if existing:
                         if existing["item_id"] != item_id or existing["kind"] != kind:
                             raise vision.VisionError(409, "This request ID belongs to a different operation.")
-                        return operation_json(existing), True
+                        return self.operation_json(existing), True
                     if not self.enabled:
                         raise vision.VisionError(503, "Locker controls are disabled. Ask staff for assistance.")
                     item = db.execute("SELECT items.id,recognitions.result, item_storage.status,item_storage.compartment_id "
@@ -378,7 +390,7 @@ class LockerStore:
                     # even this write fails, a later idle request repairs it.
                     with db:
                         self._uncertain(db, request_id, item_id, compartment)
-                return operation_json(db.execute("SELECT * FROM locker_operations WHERE id=?", (request_id,)).fetchone()), False
+                return self.operation_json(db.execute("SELECT * FROM locker_operations WHERE id=?", (request_id,)).fetchone()), False
             finally:
                 db.close()
 
@@ -400,10 +412,16 @@ class LockerStore:
                 if row["state"] == "completed":
                     if row["outcome"] != chosen:
                         raise vision.VisionError(409, "A completed operation cannot be reinterpreted.")
-                    return operation_json(row)
+                    return self.operation_json(row)
                 allowed_states = ("awaiting_confirmation",) if outcome is None else ("awaiting_confirmation", "uncertain")
                 if row["state"] not in allowed_states:
                     raise vision.VisionError(409, "This operation needs staff inspection before it can finish.")
+                if outcome is None:
+                    door = self.door_snapshot(row["compartment_id"])
+                    if door["enabled"] and door["state"] != "closed":
+                        if door["state"] == "unavailable":
+                            raise vision.VisionError(503, "Door status is unavailable. Wait a moment or ask staff for help.")
+                        raise vision.VisionError(409, "Please close the compartment door and wait for confirmation.")
                 slot = db.execute("SELECT * FROM compartments WHERE id=?", (row["compartment_id"],)).fetchone()
                 storage = db.execute("SELECT * FROM item_storage WHERE item_id=?", (row["item_id"],)).fetchone()
                 expected_slot = "recovery" if row["state"] == "uncertain" else (
@@ -420,7 +438,7 @@ class LockerStore:
                 db.execute("UPDATE compartments SET state=?,item_id=? WHERE id=?",
                            ("occupied" if occupied else "free", row["item_id"] if occupied else None, slot["id"]))
                 db.execute("UPDATE locker_operations SET state='completed',outcome=?,error=NULL WHERE id=?", (chosen, identifier))
-                return operation_json(db.execute("SELECT * FROM locker_operations WHERE id=?", (identifier,)).fetchone())
+                return self.operation_json(db.execute("SELECT * FROM locker_operations WHERE id=?", (identifier,)).fetchone())
         finally:
             db.close()
 

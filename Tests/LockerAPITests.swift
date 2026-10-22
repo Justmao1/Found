@@ -34,6 +34,8 @@ final class LockerAPITests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(result.driver, "gpio")
         XCTAssertEqual(result.compartments.map(\.id), ["01", "02", "03", "04"])
         XCTAssertNil(result.compartments[0].itemID)
+        XCTAssertNil(result.compartments[0].door, "Legacy servers retain manual confirmation")
+        XCTAssertNil(result.operations.first?.door)
         XCTAssertEqual(result.compartments[3].state, "recovery")
         XCTAssertEqual(result.operations.first?.state, "uncertain")
         let request = try XCTUnwrap(transport.requests.first)
@@ -71,6 +73,41 @@ final class LockerAPITests: XCTestCase, @unchecked Sendable {
         XCTAssertNotNil(UUID(uuidString: first.requestID))
         XCTAssertEqual(first.requestID, first.requestID.lowercased())
         XCTAssertNotEqual(first.requestID, second.requestID)
+    }
+
+    func testDoorFeedbackDecodesOnBothCompartmentAndOperation() throws {
+        let door = """
+        {"enabled":true,"gpio":12,"pin":32,"state":"closed","level":0,
+         "updated_at":1792656000.25,"error":null}
+        """
+        let compartment = try JSONDecoder().decode(LockerCompartment.self, from: Data("""
+        {"id":"01","state":"reserved","door":\(door)}
+        """.utf8))
+        let operationJSON = operation().dropLast() + ",\"door\":\(door)}"
+        let operation = try JSONDecoder().decode(LockerOperation.self, from: Data(operationJSON.utf8))
+        XCTAssertEqual(compartment.door, operation.door)
+        XCTAssertEqual(operation.door?.state, .closed)
+        XCTAssertEqual(operation.door?.gpio, 12)
+        XCTAssertEqual(operation.door?.pin, 32)
+        XCTAssertEqual(operation.door?.level, 0)
+        XCTAssertEqual(operation.door?.updatedAt, 1792656000.25)
+        let roundTrip = try JSONDecoder().decode(LockerOperation.self, from: JSONEncoder().encode(operation))
+        XCTAssertEqual(roundTrip, operation)
+    }
+
+    func testUnconfiguredAndUnknownDoorStatesRemainDistinct() throws {
+        let decoder = JSONDecoder()
+        let unconfigured = try decoder.decode(LockerDoor.self, from: Data("""
+        {"enabled":false,"state":"not_configured","gpio":null,"pin":null,"level":null,"updated_at":null}
+        """.utf8))
+        XCTAssertFalse(unconfigured.enabled)
+        XCTAssertEqual(unconfigured.state, .notConfigured)
+        let futureState = try decoder.decode(LockerDoor.self, from: Data("""
+        {"enabled":true,"state":"future_sensor_state"}
+        """.utf8))
+        XCTAssertTrue(futureState.enabled)
+        XCTAssertEqual(futureState.state, .unknown)
+        XCTAssertNil(futureState.level)
     }
 
     func testRecoveryLookupIsReadOnlyAndCanonicalizesTheOperationID() async throws {

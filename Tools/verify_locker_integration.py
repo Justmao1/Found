@@ -15,6 +15,7 @@ import selectors
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -35,7 +36,28 @@ def serve_fixture(directory):
     import lockers
     import server as backend
 
-    app = backend.build_server("127.0.0.1", 0, directory / "data", auto_recognize=False)
+    door_control = directory / "door-state.json"
+    door_control.write_text(json.dumps({"state": "open"}), encoding="utf-8")
+
+    class FixtureDoorMonitor:
+        enabled = True
+
+        def start(self):
+            pass
+
+        def close(self):
+            pass
+
+        def snapshot(self, compartment):
+            configured = compartment == "01"
+            state = json.loads(door_control.read_text())["state"] if configured else "not_configured"
+            return {"enabled": configured, "gpio": 12 if configured else None,
+                    "pin": 32 if configured else None, "state": state,
+                    "level": (0 if state == "closed" else 1) if configured else None,
+                    "updated_at": time.time() if configured else None, "error": None}
+
+    app = backend.build_server("127.0.0.1", 0, directory / "data", auto_recognize=False,
+                               door_monitor=FixtureDoorMonitor())
     if not isinstance(app.lockers.driver, lockers.SimulatedDriver) or "lgpio" in sys.modules:
         app.server_close()
         raise RuntimeError("Integration must not initialize physical GPIO")
@@ -85,6 +107,8 @@ def run():
         environment.pop(name, None)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["LOST_FOUND_LOCKER_MODE"] = "simulated"
+    environment["LOST_FOUND_VIBRATION_ENABLED"] = "0"
+    environment["LOST_FOUND_DOOR_FEEDBACK_ENABLED"] = "0"
     environment["DEVELOPER_DIR"] = "/Applications/Xcode.app/Contents/Developer"
     server = None
     temporary_path = None
@@ -119,7 +143,7 @@ def run():
                     raise RuntimeError("Fixture server failed to report its loopback address")
                 result = subprocess.run(
                     [str(executable), startup, str(temporary_path / "items.json"),
-                     str(temporary_path / "pulses.jsonl")],
+                     str(temporary_path / "pulses.jsonl"), str(temporary_path / "door-state.json")],
                     env=environment, capture_output=True, text=True, timeout=45, check=False,
                 )
                 lines.extend(result.stdout.strip().splitlines())

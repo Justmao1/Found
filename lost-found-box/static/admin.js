@@ -293,6 +293,11 @@
     text('freshness', current ? (age < 3 ? "Live" : age + " s ago") : (age == null ? "Not connected" : "Data is stale"));
     document.querySelector('.station-dot').classList.toggle('online', !!current);
     if (!current) badge($('vibration-status'), 'recorded', 'No live data');
+    const slots = new Map((state.overview?.lockers?.compartments || []).map((slot) => [slot.id, slot]));
+    for (const card of $('slot-grid').children) {
+      const slot = slots.get(card.dataset.key);
+      if (slot) updateSlotDoor(card, slot.door, current);
+    }
     if (current) $('connection-notice').hidden = true;
     else if (state.overview && state.online) {
       text('connection-notice', "Reconnecting to the station…");
@@ -437,21 +442,44 @@
   function createSlot(slot) {
     const card = element('article', 'slot-card');
     const head = element('div', 'slot-head'); head.append(element('strong', 'slot-number'), element('span', 'badge'));
+    const door = element('div', 'slot-door badge neutral');
+    door.setAttribute('role', 'status'); door.setAttribute('aria-atomic', 'true');
+    door.append(icon('door'), element('span', 'slot-door-label'));
     const facts = element('div', 'slot-facts'); facts.append(element('span', 'slot-gpio'), element('span', 'slot-level'));
     const open = button("", 'open-slot', { slot: slot.id, control: 'open' }); open.append(icon('door'), element('span', 'slot-open-label', 'Open'));
     open.setAttribute('aria-label', 'Open compartment ' + slot.id);
-    card.append(head, element('div', 'slot-visual'), element('h3', 'slot-title'), element('p', 'slot-subtitle'), facts, open, element('p', 'slot-detail'));
+    card.append(head, element('div', 'slot-visual'), element('h3', 'slot-title'), element('p', 'slot-subtitle'), door, element('p', 'slot-door-detail'), facts, open, element('p', 'slot-detail'));
     return card;
+  }
+  function updateSlotDoor(card, sensor, current) {
+    const configured = sensor?.enabled === true;
+    const live = configured && current;
+    const doorState = live ? sensor.state : null;
+    const closed = doorState === 'closed', open = doorState === 'open';
+    const checking = doorState === 'unknown';
+    const caption = !configured ? 'No door sensor' : closed ? 'Door closed' : open ? 'Door open' : checking ? 'Checking door…' : 'Door status unavailable';
+    const status = card.querySelector('.slot-door');
+    status.className = 'slot-door badge ' + (closed ? 'success' : open ? 'warning' : 'neutral');
+    const symbol = '#i-' + (closed ? 'check' : open || !configured ? 'door' : checking ? 'refresh' : 'alert');
+    const use = status.querySelector('use');
+    if (use.getAttribute('href') !== symbol) use.setAttribute('href', symbol);
+    const label = card.querySelector('.slot-door-label');
+    if (label.textContent !== caption) label.textContent = caption;
+    const wiring = configured ? 'Input GPIO ' + numeric(sensor.gpio) + ' · Pin ' + numeric(sensor.pin) : 'Manual confirmation';
+    const detail = !configured ? wiring : !current ? wiring + ' · No live data' : sensor.error ? wiring + ' · ' + sensor.error : wiring;
+    const description = card.querySelector('.slot-door-detail');
+    if (description.textContent !== detail) description.textContent = detail;
   }
   function updateSlot(card, slot) {
     card.className = 'slot-card ' + (slot.state === 'free' ? 'free' : slot.state === 'occupied' ? 'occupied' : 'warning');
     card.querySelector('.slot-number').textContent = slot.id;
-    badge(card.querySelector('.badge'), slot.state);
+    badge(card.querySelector('.slot-head .badge'), slot.state);
     photo(card.querySelector('.slot-visual'), slot.item);
     card.querySelector('.slot-title').textContent = slot.item ? title(slot.item) : slot.state === 'free' ? "Ready for an item" : "Pending operation";
     card.querySelector('.slot-subtitle').textContent = slot.item ? (slot.item.recognition?.tags || []).slice(1, 3).join(' · ') || "No additional tags" : slot.state === 'free' ? "Available for a new item" : "See pending actions below";
-    card.querySelector('.slot-gpio').textContent = 'GPIO ' + numeric(slot.gpio) + " · Physical pin " + numeric(slot.pin);
-    card.querySelector('.slot-level').textContent = "GPIO level: " + (slot.output_level === 1 ? "High" : slot.output_level === 0 ? "Low" : "Not available");
+    updateSlotDoor(card, slot.door, fresh());
+    card.querySelector('.slot-gpio').textContent = 'Lock output GPIO ' + numeric(slot.gpio) + " · Pin " + numeric(slot.pin);
+    card.querySelector('.slot-level').textContent = "Output level: " + (slot.output_level === 1 ? "High" : slot.output_level === 0 ? "Low" : "Not available");
     const remaining = slot.cooldown_remaining_seconds;
     card.querySelector('.slot-detail').textContent = finite(remaining) && remaining > 0 ? "Cooldown: " + Math.ceil(remaining) + " s remaining" : slot.state === 'maintenance' ? "Opening needs attention" : '';
   }
