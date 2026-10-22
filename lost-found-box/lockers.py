@@ -33,6 +33,11 @@ def operation_json(row):
             ("id", "kind", "item_id", "compartment_id", "state", "error")}
 
 
+def manual_operation_json(row):
+    return {key: row[key] for key in
+            ("id", "compartment_id", "state", "reason", "created_at", "error", "item_id")}
+
+
 class SimulatedDriver:
     name = "simulated"
     cooldown_seconds = 0
@@ -166,11 +171,23 @@ class LockerStore:
                         ON locker_operations(compartment_id) WHERE state != 'completed';
                     CREATE TABLE IF NOT EXISTS locker_pulses (
                         compartment_id TEXT PRIMARY KEY REFERENCES compartments(id), attempted_at REAL NOT NULL);
+                    CREATE TABLE IF NOT EXISTS manual_openings (
+                        id TEXT PRIMARY KEY, compartment_id TEXT NOT NULL REFERENCES compartments(id),
+                        reason TEXT NOT NULL, created_at REAL NOT NULL, state TEXT NOT NULL, error TEXT,
+                        item_id TEXT REFERENCES items(id), previous_slot_state TEXT NOT NULL,
+                        previous_item_status TEXT, previous_item_compartment_id TEXT REFERENCES compartments(id),
+                        previous_operation_id TEXT REFERENCES locker_operations(id), previous_operation_state TEXT);
+                    CREATE UNIQUE INDEX IF NOT EXISTS one_active_manual_compartment
+                        ON manual_openings(compartment_id) WHERE state!='completed';
+                    CREATE UNIQUE INDEX IF NOT EXISTS one_active_manual_item
+                        ON manual_openings(item_id) WHERE state!='completed' AND item_id IS NOT NULL;
                     """)
                     db.executemany("INSERT OR IGNORE INTO compartments(id) VALUES (?)", [(key,) for key in GPIO_MAP])
                     interrupted = db.execute("SELECT * FROM locker_operations WHERE state='actuating'").fetchall()
                     for row in interrupted:
                         self._uncertain(db, row["id"], row["item_id"], row["compartment_id"])
+                    for row in db.execute("SELECT id FROM manual_openings WHERE state='actuating'").fetchall():
+                        self._manual_uncertain(db, row["id"])
             finally:
                 db.close()
 
@@ -201,26 +218,36 @@ class LockerStore:
                 db.execute("BEGIN IMMEDIATE")
                 for row in db.execute("SELECT * FROM locker_operations WHERE state='actuating'").fetchall():
                     self._uncertain(db, row["id"], row["item_id"], row["compartment_id"])
+                for row in db.execute("SELECT id FROM manual_openings WHERE state='actuating'").fetchall():
+                    self._manual_uncertain(db, row["id"])
         finally:
             db.close()
 
-    def _recover_if_idle(self):
-        # Reads and completion must not wait for or interrupt an active pulse.
-        # They can repair a committed intent whose owning request has exited.
+    @contextmanager
+    def _try_hardware_lock(self):
         if not self.lock.acquire(blocking=False):
+            yield False
             return
         try:
             with (self.directory / "locker-hardware.lock").open("a+") as stream:
                 try:
                     fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
+                    yield False
                     return
                 try:
-                    self._recover_abandoned_locked()
+                    yield True
                 finally:
                     fcntl.flock(stream, fcntl.LOCK_UN)
         finally:
             self.lock.release()
+
+    def _recover_if_idle(self):
+        # Reads and completion must not wait for or interrupt an active pulse.
+        # They can repair a committed intent whose owning request has exited.
+        with self._try_hardware_lock() as acquired:
+            if acquired:
+                self._recover_abandoned_locked()
 
     def _cooling_down(self, db, compartment):
         row = db.execute("SELECT attempted_at FROM locker_pulses WHERE compartment_id=?", (compartment,)).fetchone()
@@ -232,6 +259,16 @@ class LockerStore:
             except (OSError, ValueError):
                 raise vision.VisionError(503, "Could not verify the lock cooldown. Ask staff to check it.") from None
         return time.time() - last < self.driver.cooldown_seconds
+
+    def _issue_pulse(self, compartment):
+        if self.driver.name == "gpio":
+            # Keep the diagnostic CLI's cooldown in sync with the API.
+            diagnostic = self.directory / f"lock-test-gpio{GPIO_MAP[compartment]}.lock"
+            with diagnostic.open("w") as stream:
+                stream.write(str(time.time()))
+                stream.flush()
+                os.fsync(stream.fileno())
+        self.driver.pulse(compartment)
 
     def snapshot(self):
         self._recover_if_idle()
@@ -264,6 +301,11 @@ class LockerStore:
         db.execute("UPDATE item_storage SET status='recovery' WHERE item_id=?", (item_id,))
         db.execute("UPDATE compartments SET state='recovery' WHERE id=?", (compartment,))
 
+    @staticmethod
+    def _manual_uncertain(db, identifier):
+        # The committed maintenance reservation and previous state stay intact.
+        db.execute("UPDATE manual_openings SET state='uncertain',error=? WHERE id=?", (UNCERTAIN, identifier))
+
     def start(self, request_id, item_id, kind):
         canonical_uuid(request_id)
         canonical_uuid(item_id)
@@ -287,6 +329,8 @@ class LockerStore:
                                       "LEFT JOIN item_storage ON item_storage.item_id=items.id WHERE items.id=?", (item_id,)).fetchone()
                     if item is None:
                         raise vision.VisionError(404, "Item not found.")
+                    if db.execute("SELECT 1 FROM manual_openings WHERE item_id=? AND state!='completed'", (item_id,)).fetchone():
+                        raise vision.VisionError(409, "Staff are checking this compartment. Wait for the maintenance confirmation.")
                     if db.execute("SELECT 1 FROM locker_operations WHERE item_id=? AND state!='completed'", (item_id,)).fetchone():
                         raise vision.VisionError(409, "This item already has an unfinished locker operation. Resume it first.")
                     if kind == "deposit":
@@ -308,7 +352,6 @@ class LockerStore:
                         if self._cooling_down(db, slot["id"]):
                             raise vision.VisionError(429, "This lock is cooling down. Wait 30 seconds before trying again.")
                     compartment = slot["id"]
-                    diagnostic = self.directory / f"lock-test-gpio{GPIO_MAP[compartment]}.lock"
                     try:
                         self.driver.preflight()
                     except Exception:
@@ -324,13 +367,7 @@ class LockerStore:
                                "attempted_at=excluded.attempted_at", (compartment, time.time()))
                 # Durable actuation intent has committed before crossing the GPIO boundary.
                 try:
-                    if self.driver.name == "gpio":
-                        # Keep the diagnostic CLI's cooldown in sync with the API.
-                        with diagnostic.open("w") as stream:
-                            stream.write(str(time.time()))
-                            stream.flush()
-                            os.fsync(stream.fileno())
-                    self.driver.pulse(compartment)
+                    self._issue_pulse(compartment)
                     with db:
                         db.execute("UPDATE locker_operations SET state='awaiting_confirmation' WHERE id=?", (request_id,))
                 except Exception:
@@ -383,3 +420,139 @@ class LockerStore:
                 return operation_json(db.execute("SELECT * FROM locker_operations WHERE id=?", (identifier,)).fetchone())
         finally:
             db.close()
+
+    def manual_open(self, request_id, compartment_id, reason):
+        canonical_uuid(request_id)
+        if not isinstance(compartment_id, str) or compartment_id not in GPIO_MAP:
+            raise vision.VisionError(400, "Choose compartment 01, 02, 03 or 04.")
+        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 200:
+            raise vision.VisionError(400, "Describe the reason in 1 to 200 characters.")
+        reason = reason.strip()
+        try:
+            reason.encode("utf-8")
+        except UnicodeError:
+            raise vision.VisionError(400, "Invalid reason text.") from None
+        with self._serialized():
+            self._recover_abandoned_locked()
+            db = self.connect()
+            try:
+                with db:
+                    db.execute("BEGIN IMMEDIATE")
+                    existing = db.execute("SELECT * FROM manual_openings WHERE id=?", (request_id,)).fetchone()
+                    if existing is not None:
+                        if existing["compartment_id"] != compartment_id or existing["reason"] != reason:
+                            raise vision.VisionError(409, "This request ID belongs to a different manual opening.")
+                        return manual_operation_json(existing), True
+                    if not self.enabled:
+                        raise vision.VisionError(503, "Locker controls are disabled. No opening command was sent.")
+                    if db.execute("SELECT 1 FROM manual_openings WHERE compartment_id=? AND state!='completed'",
+                                  (compartment_id,)).fetchone():
+                        raise vision.VisionError(409, "This compartment already has an unfinished manual opening.")
+                    slot = db.execute("SELECT * FROM compartments WHERE id=?", (compartment_id,)).fetchone()
+                    if slot is None:
+                        raise vision.VisionError(409, "Compartment configuration is incomplete. No opening command was sent.")
+                    visitor = db.execute("SELECT * FROM locker_operations WHERE compartment_id=? AND state!='completed'",
+                                         (compartment_id,)).fetchone()
+                    storage = db.execute("SELECT * FROM item_storage WHERE item_id=?", (slot["item_id"],)).fetchone()
+                    expected_status = {"occupied": "stored", "reserved": "deposit_pending",
+                                       "retrieving": "retrieval_pending", "recovery": "recovery"}
+                    valid_visitor = visitor is None if slot["state"] in ("free", "occupied") else (
+                        visitor is not None and visitor["item_id"] == slot["item_id"] and
+                        ((slot["state"] == "reserved" and visitor["kind"] == "deposit" and visitor["state"] == "awaiting_confirmation") or
+                         (slot["state"] == "retrieving" and visitor["kind"] == "retrieve" and visitor["state"] == "awaiting_confirmation") or
+                         (slot["state"] == "recovery" and visitor["state"] == "uncertain")))
+                    if slot["state"] == "free":
+                        valid = slot["item_id"] is None and valid_visitor
+                    else:
+                        valid = (slot["state"] in expected_status and storage is not None and
+                                 storage["status"] == expected_status[slot["state"]] and
+                                 storage["compartment_id"] == compartment_id and valid_visitor)
+                    if not valid:
+                        raise vision.VisionError(409, "Compartment state is inconsistent. Inspect the existing operation first.")
+                    if self._cooling_down(db, compartment_id):
+                        raise vision.VisionError(429, "This lock is cooling down. Wait 30 seconds before trying again.")
+                    try:
+                        self.driver.preflight()
+                    except Exception:
+                        raise vision.VisionError(503, "Lock hardware is unavailable. No opening command was sent.") from None
+                    db.execute("""INSERT INTO manual_openings
+                        (id,compartment_id,reason,created_at,state,error,item_id,previous_slot_state,
+                         previous_item_status,previous_item_compartment_id,previous_operation_id,previous_operation_state)
+                        VALUES (?,?,?,?,'actuating',NULL,?,?,?,?,?,?)""",
+                        (request_id, compartment_id, reason, time.time(), slot["item_id"], slot["state"],
+                         storage["status"] if storage else None, storage["compartment_id"] if storage else None,
+                         visitor["id"] if visitor else None, visitor["state"] if visitor else None))
+                    db.execute("UPDATE compartments SET state='maintenance' WHERE id=?", (compartment_id,))
+                    db.execute("INSERT INTO locker_pulses VALUES (?,?) ON CONFLICT(compartment_id) DO UPDATE SET "
+                               "attempted_at=excluded.attempted_at", (compartment_id, time.time()))
+                try:
+                    self._issue_pulse(compartment_id)
+                    with db:
+                        db.execute("UPDATE manual_openings SET state='awaiting_confirmation' WHERE id=?", (request_id,))
+                except Exception:
+                    with db:
+                        self._manual_uncertain(db, request_id)
+                return manual_operation_json(db.execute("SELECT * FROM manual_openings WHERE id=?", (request_id,)).fetchone()), False
+            finally:
+                db.close()
+
+    def manual_get(self, identifier):
+        canonical_uuid(identifier)
+        self._recover_if_idle()
+        db = self.connect()
+        try:
+            row = db.execute("SELECT * FROM manual_openings WHERE id=?", (identifier,)).fetchone()
+            if row is None:
+                raise vision.VisionError(404, "Manual opening not found.")
+            return manual_operation_json(row)
+        finally:
+            db.close()
+
+    def manual_list(self):
+        self._recover_if_idle()
+        db = self.connect()
+        try:
+            return [manual_operation_json(row) for row in db.execute(
+                "SELECT * FROM manual_openings WHERE state!='completed' ORDER BY created_at,id")]
+        finally:
+            db.close()
+
+    def manual_confirm(self, identifier):
+        canonical_uuid(identifier)
+        # Hold the same cross-process lock throughout confirmation. Returning a
+        # conflict while busy avoids acknowledging a door during any live pulse.
+        with self._try_hardware_lock() as acquired:
+            if not acquired:
+                raise vision.VisionError(409, "An opening command is in progress. Wait before confirming the door is closed.")
+            self._recover_abandoned_locked()
+            db = self.connect()
+            try:
+                with db:
+                    db.execute("BEGIN IMMEDIATE")
+                    row = db.execute("SELECT * FROM manual_openings WHERE id=?", (identifier,)).fetchone()
+                    if row is None:
+                        raise vision.VisionError(404, "Manual opening not found.")
+                    if row["state"] == "completed":
+                        return manual_operation_json(row)
+                    if row["state"] not in ("awaiting_confirmation", "uncertain"):
+                        raise vision.VisionError(409, "Wait for the opening command before checking the compartment.")
+                    slot = db.execute("SELECT * FROM compartments WHERE id=?", (row["compartment_id"],)).fetchone()
+                    storage = db.execute("SELECT * FROM item_storage WHERE item_id=?", (row["item_id"],)).fetchone()
+                    visitor = db.execute("SELECT * FROM locker_operations WHERE compartment_id=? AND state!='completed'",
+                                         (row["compartment_id"],)).fetchone()
+                    valid_storage = (storage is None and row["item_id"] is None) or (
+                        storage is not None and storage["status"] == row["previous_item_status"] and
+                        storage["compartment_id"] == row["previous_item_compartment_id"])
+                    valid_visitor = (visitor is None and row["previous_operation_id"] is None) or (
+                        visitor is not None and visitor["id"] == row["previous_operation_id"] and
+                        visitor["state"] == row["previous_operation_state"] and visitor["item_id"] == row["item_id"])
+                    if (slot is None or slot["state"] != "maintenance" or slot["item_id"] != row["item_id"] or
+                            not valid_storage or not valid_visitor):
+                        raise vision.VisionError(409, "Compartment or item state changed. Inspect it before restoring availability.")
+                    # Contents were explicitly checked unchanged: restore the
+                    # prior slot state, never infer collected or finish a visitor.
+                    db.execute("UPDATE compartments SET state=? WHERE id=?", (row["previous_slot_state"], row["compartment_id"]))
+                    db.execute("UPDATE manual_openings SET state='completed',error=NULL WHERE id=?", (identifier,))
+                    return manual_operation_json(db.execute("SELECT * FROM manual_openings WHERE id=?", (identifier,)).fetchone())
+            finally:
+                db.close()

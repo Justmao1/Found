@@ -24,6 +24,7 @@ import vision
 import search
 import speech
 import lockers
+import iot_admin
 
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
@@ -164,6 +165,7 @@ class PhotoServer(ThreadingHTTPServer):
         finally:
             db.close()
         self.lockers = lockers.LockerStore(self.connect_db, directory, locker_driver)
+        self.admin = iot_admin.Administration(self, item_json)
         super().__init__(address, PhotoHandler)
         self.ai_worker = threading.Thread(target=self._recognition_worker, daemon=True,
                                           name="lost-found-recognition")
@@ -362,7 +364,7 @@ class PhotoHandler(BaseHTTPRequestHandler):
         super().setup()
         self.connection.settimeout(15)
 
-    def _send(self, status, body, mime_type="application/json; charset=utf-8"):
+    def _send(self, status, body, mime_type="application/json; charset=utf-8", headers=None):
         if not isinstance(body, bytes):
             body = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -374,6 +376,8 @@ class PhotoHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' blob:; "
                          "media-src 'self' blob:; object-src 'none'; base-uri 'none'; "
                          "frame-ancestors 'none'; form-action 'self'")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -401,7 +405,9 @@ class PhotoHandler(BaseHTTPRequestHandler):
 
     def _get(self):
         path = self.path.partition("?")[0]
-        if path == "/api/health":
+        if path.startswith("/api/admin/"):
+            self._admin_get(path)
+        elif path == "/api/health":
             self._send(200, {"ok": True})
         elif path == "/api/ai/status":
             self._send(200, vision.configuration_status())
@@ -449,6 +455,10 @@ class PhotoHandler(BaseHTTPRequestHandler):
                 self._send(200, row["image"], row["mime_type"])
         else:
             allowed = {"/": ("index.html", "text/html; charset=utf-8"),
+                       "/admin": ("admin.html", "text/html; charset=utf-8"),
+                       "/admin/": ("admin.html", "text/html; charset=utf-8"),
+                       "/admin/admin.css": ("admin.css", "text/css; charset=utf-8"),
+                       "/admin/admin.js": ("admin.js", "text/javascript; charset=utf-8"),
                        "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                        "/style.css": ("style.css", "text/css; charset=utf-8")}
             entry = allowed.get(path)
@@ -456,6 +466,69 @@ class PhotoHandler(BaseHTTPRequestHandler):
                 self._error(404, "Page not found")
                 return
             self._send(200, (STATIC_DIR / entry[0]).read_bytes(), entry[1])
+
+    def _admin_get(self, path):
+        admin = self.server.admin
+        cookie = self.headers.get("Cookie")
+        if path == "/api/admin/session":
+            self._send(200, {"configured": admin.sessions.configured,
+                             "authenticated": admin.sessions.authenticated(cookie)})
+            return
+        admin.sessions.require(cookie)
+        if path == "/api/admin/overview":
+            self._send(200, admin.overview(isinstance(self.connection, ssl.SSLSocket)))
+        elif path == "/api/admin/items":
+            self._send(200, admin.items(parse_qs(urlsplit(self.path).query, keep_blank_values=True)))
+        elif path.startswith("/api/admin/manual-open/"):
+            self._send(200, {"operation": self.server.lockers.manual_get(path[len('/api/admin/manual-open/'):])})
+        else:
+            self._error(404, "Endpoint not found")
+
+    def _admin_post(self, path, payload):
+        admin = self.server.admin
+        cookie = self.headers.get("Cookie")
+        secure = isinstance(self.connection, ssl.SSLSocket)
+        if path == "/api/admin/login":
+            if set(payload) != {"password"}:
+                raise vision.VisionError(400, "请提供管理员密码。")
+            token = admin.sessions.login(payload["password"], self.client_address[0])
+            admin.sessions.logout(cookie)
+            self._send(200, {"authenticated": True}, headers={"Set-Cookie": admin.sessions.cookie(token, secure)})
+            return
+        if path == "/api/admin/logout":
+            if payload:
+                raise vision.VisionError(400, "退出请求应为空对象。")
+            admin.sessions.logout(cookie)
+            self._send(200, {"authenticated": False}, headers={"Set-Cookie": admin.sessions.cookie("", secure)})
+            return
+        if path == "/api/admin/manual-open":
+            if set(payload) != {"request_id", "compartment_id", "reason"}:
+                raise vision.VisionError(400, "请提供操作编号、格子编号和开门原因。")
+            operation, duplicate = self.server.lockers.manual_open(
+                payload["request_id"], payload["compartment_id"], payload["reason"])
+            self._send(200 if duplicate else 201, {"operation": operation, "duplicate": duplicate})
+            return
+        parts = path[len("/api/admin/"):].split("/")
+        if len(parts) != 3:
+            raise vision.VisionError(404, "Endpoint not found")
+        category, identifier, action = parts
+        identifier = lockers.canonical_uuid(identifier)
+        if category == "manual-open" and action == "confirm":
+            if payload:
+                raise vision.VisionError(400, "确认请求应为空对象。")
+            self._send(200, {"operation": self.server.lockers.manual_confirm(identifier)})
+        elif category == "locker-operations" and action == "resolve":
+            if set(payload) != {"outcome"} or not isinstance(payload["outcome"], str):
+                raise vision.VisionError(400, "请选择现场检查结果。")
+            operation = self.server.lockers.finish(identifier, payload["outcome"])
+            self._send(200, self.server.operation_response(operation))
+        elif category == "items" and action == "recognize":
+            if payload:
+                raise vision.VisionError(400, "识别请求应为空对象。")
+            self.server.enqueue_recognition(identifier)
+            self._send(202, {"queued": True, "item_id": identifier})
+        else:
+            raise vision.VisionError(404, "Endpoint not found")
 
     def _same_origin(self):
         origin = self.headers.get("Origin")
@@ -492,7 +565,11 @@ class PhotoHandler(BaseHTTPRequestHandler):
         path = self.path.partition("?")[0]
         identifier = None
         locker_action = None
-        if path.startswith("/api/items/") and path.endswith("/recognize"):
+        admin_request = path.startswith("/api/admin/")
+        if admin_request:
+            if path != "/api/admin/login":
+                self.server.admin.sessions.require(self.headers.get("Cookie"))
+        elif path.startswith("/api/items/") and path.endswith("/recognize"):
             identifier = path[len("/api/items/"):-len("/recognize")]
             try:
                 if str(uuid.UUID(identifier)) != identifier:
@@ -520,7 +597,7 @@ class PhotoHandler(BaseHTTPRequestHandler):
             "/api/search": (MAX_SEARCH_BODY_BYTES, "Search request exceeds 16 KiB."),
             "/api/transcribe": (speech.MAX_BODY_BYTES, "Speech request exceeds 1.4 MB. Please record a shorter description."),
         }.get(path, (MAX_BODY_BYTES, "Upload too large. Please take another photo."))
-        if path.startswith("/api/locker-operations"):
+        if path.startswith("/api/locker-operations") or admin_request:
             body_limit, size_error = MAX_SEARCH_BODY_BYTES, "Locker request exceeds 16 KiB."
         if len(lengths[0]) > 12:
             self._error(413, size_error)
@@ -543,6 +620,9 @@ class PhotoHandler(BaseHTTPRequestHandler):
             return
         if not isinstance(payload, dict):
             self._error(400, "Request must be a JSON object")
+            return
+        if admin_request:
+            self._admin_post(path, payload)
             return
         if path == "/api/locker-operations":
             if set(payload) != {"request_id", "item_id", "kind"}:

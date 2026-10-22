@@ -118,3 +118,10 @@
 - [ ] Fixed camera mounting direction and capture area; do not force a camera orientation before this is known.
 - [x] Physical claiming: four compartments 01→GPIO17, 02→GPIO26, 03→GPIO13, 04→GPIO5; all use S8050 inverters with LOW-trigger relay modules. GPIO5 is disconnected from the prior feedback contact plan. Completion uses deliberate visitor acknowledgement, not a door sensor.
 - [ ] Distribution/device lock-down remains a deployment decision.
+
+## IoT staff web console · 2026-10-22
+- Additional product surface: `/admin/`, a Chinese staff dashboard for the existing Raspberry Pi station. Follow `docs/iot-admin-contract.md`; retain the visitor iPad flow.
+- Structure: desktop sidebar, overview with connection freshness and system telemetry, four compartment cards, searchable/paginated inventory, operation history and inspected recovery. Narrow screens stack cards and scroll tables without hiding controls.
+- Reuse Found green and northeast arrow. Use local inline SVG icons with text labels, high-contrast status badges, subtle neutral surfaces, restrained charts of actual recent samples. No external fonts, packages, mock inventory, or fake sensor readings.
+- Each manual opening requires an explicit compartment/reason confirmation; retain request identity on uncertain response, query without re-pulsing, and require a separate physical check before restoring availability. A manual opening does not collect an item. Door position is “未接传感器”.
+- Poll visible dashboards every three seconds with last successful update; show stale data and disable opening when disconnected. Preserve focused controls, dialogs and typed filters across refreshes. Administrator login uses HttpOnly cookie sessions; never store the password in web storage.
