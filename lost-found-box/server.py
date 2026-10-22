@@ -490,20 +490,20 @@ class PhotoHandler(BaseHTTPRequestHandler):
         secure = isinstance(self.connection, ssl.SSLSocket)
         if path == "/api/admin/login":
             if set(payload) != {"password"}:
-                raise vision.VisionError(400, "请提供管理员密码。")
+                raise vision.VisionError(400, "Provide the administrator password.")
             token = admin.sessions.login(payload["password"], self.client_address[0])
             admin.sessions.logout(cookie)
             self._send(200, {"authenticated": True}, headers={"Set-Cookie": admin.sessions.cookie(token, secure)})
             return
         if path == "/api/admin/logout":
             if payload:
-                raise vision.VisionError(400, "退出请求应为空对象。")
+                raise vision.VisionError(400, "The sign-out request must be an empty object.")
             admin.sessions.logout(cookie)
             self._send(200, {"authenticated": False}, headers={"Set-Cookie": admin.sessions.cookie("", secure)})
             return
         if path == "/api/admin/manual-open":
             if set(payload) != {"request_id", "compartment_id", "reason"}:
-                raise vision.VisionError(400, "请提供操作编号、格子编号和开门原因。")
+                raise vision.VisionError(400, "Provide the request ID, compartment ID and reason for opening.")
             operation, duplicate = self.server.lockers.manual_open(
                 payload["request_id"], payload["compartment_id"], payload["reason"])
             self._send(200 if duplicate else 201, {"operation": operation, "duplicate": duplicate})
@@ -515,16 +515,16 @@ class PhotoHandler(BaseHTTPRequestHandler):
         identifier = lockers.canonical_uuid(identifier)
         if category == "manual-open" and action == "confirm":
             if payload:
-                raise vision.VisionError(400, "确认请求应为空对象。")
+                raise vision.VisionError(400, "The confirmation request must be an empty object.")
             self._send(200, {"operation": self.server.lockers.manual_confirm(identifier)})
         elif category == "locker-operations" and action == "resolve":
             if set(payload) != {"outcome"} or not isinstance(payload["outcome"], str):
-                raise vision.VisionError(400, "请选择现场检查结果。")
+                raise vision.VisionError(400, "Select the outcome of the physical inspection.")
             operation = self.server.lockers.finish(identifier, payload["outcome"])
             self._send(200, self.server.operation_response(operation))
         elif category == "items" and action == "recognize":
             if payload:
-                raise vision.VisionError(400, "识别请求应为空对象。")
+                raise vision.VisionError(400, "The recognition request must be an empty object.")
             self.server.enqueue_recognition(identifier)
             self._send(202, {"queued": True, "item_id": identifier})
         else:

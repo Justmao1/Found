@@ -71,29 +71,29 @@ class Sessions:
 
     def require(self, cookie):
         if not self.authenticated(cookie):
-            raise vision.VisionError(401, "请先登录管理后台。")
+            raise vision.VisionError(401, "Sign in to the administration console first.")
 
     def login(self, password, address):
         if not self.configured:
-            raise vision.VisionError(503, "尚未设置管理员密码，请在树莓派运行 tools/configure_admin.py。")
+            raise vision.VisionError(503, "Administrator access is not configured. Run tools/configure_admin.py on the Raspberry Pi.")
         if not isinstance(password, str) or not 1 <= len(password) <= 256:
-            raise vision.VisionError(400, "请输入有效的管理员密码。")
+            raise vision.VisionError(400, "Enter a valid administrator password.")
         try:
             digest = hashlib.sha256(password.encode("utf-8")).digest()
         except UnicodeError:
-            raise vision.VisionError(400, "密码包含无效字符。") from None
+            raise vision.VisionError(400, "The password contains invalid characters.") from None
         now = time.monotonic()
         with self.lock:
             self.tokens = {token: expires for token, expires in self.tokens.items() if expires > now}
             self.failures = {ip: value for ip, value in self.failures.items() if value[1] > now}
             count, until = self.failures.get(address, (0, now + 300))
             if count >= 10:
-                raise vision.VisionError(429, "尝试次数过多，请五分钟后再试。")
+                raise vision.VisionError(429, "Too many sign-in attempts. Try again in five minutes.")
             if not hmac.compare_digest(digest, self.password_hash):
                 if len(self.failures) >= 256 and address not in self.failures:
                     self.failures.pop(next(iter(self.failures)))
                 self.failures[address] = (count + 1, until)
-                raise vision.VisionError(401, "管理员密码不正确。")
+                raise vision.VisionError(401, "Incorrect administrator password.")
             self.failures.pop(address, None)
             if len(self.tokens) >= 64:
                 self.tokens.pop(next(iter(self.tokens)))
@@ -242,17 +242,17 @@ class Administration:
 
     def items(self, query):
         if set(query) - {"q", "status", "offset", "limit"} or any(len(values) != 1 for values in query.values()):
-            raise vision.VisionError(400, "无效的查询参数。")
+            raise vision.VisionError(400, "Invalid query parameters.")
         term, status = query.get("q", [""])[0].strip(), query.get("status", [""])[0]
         if len(term) > 200 or status not in ("", "recorded", "deposit_pending", "stored", "retrieval_pending", "collected", "recovery"):
-            raise vision.VisionError(400, "无效的查询条件。")
+            raise vision.VisionError(400, "Invalid search or status filter.")
         try:
             term.encode("utf-8")
             offset, limit = int(query.get("offset", ["0"])[0]), int(query.get("limit", ["25"])[0])
             if not 0 <= offset <= 10_000_000 or not 1 <= limit <= 100:
                 raise ValueError()
         except (ValueError, UnicodeError):
-            raise vision.VisionError(400, "无效的分页参数。") from None
+            raise vision.VisionError(400, "Invalid pagination parameters.") from None
         conditions, args = [], []
         if status:
             conditions.append("COALESCE(item_storage.status,'recorded')=?")

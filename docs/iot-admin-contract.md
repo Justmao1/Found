@@ -1,6 +1,6 @@
 # IoT administration contract · 2026-10-22
 
-Add a Chinese staff web console at `/admin/` beside the visitor iPad and legacy photo page. No third-party packages or remote assets. Forest-green Found branding, narrow desktop sidebar, readable data panels, four prominent compartment cards, responsive tables, calm status colors, reduced-motion support. Display actual telemetry and freshness; unsupported measurements use null/“未提供”. Physical door/contents sensor data is unavailable. Never equate a software state, pulse, or GPIO level with a measured door position.
+Add an English staff web console at `/admin/` beside the visitor iPad and legacy photo page. No third-party packages or remote assets. Forest-green Found branding, narrow desktop sidebar, readable data panels, four prominent compartment cards, responsive tables, calm status colors, reduced-motion support. Display actual telemetry and freshness; unsupported measurements use null/“Not available”. Physical door/contents sensor data is unavailable. Never equate a software state, pulse, or GPIO level with a measured door position.
 
 Authentication: a separate administrator password, server-side sessions in HttpOnly SameSite=Strict cookie, Secure on HTTPS. Password never returned by HTTP or stored by the browser. Mutations retain JSON, request size, same-origin and X-Requested-With safeguards. Existing iPad APIs remain compatible with the trusted-LAN deployment. Admin endpoints do not make that legacy surface publicly safe.
 

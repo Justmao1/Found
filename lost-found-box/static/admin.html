@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Found · 站点管理</title>
+  <title>Found · Station management</title>
   <link rel="stylesheet" href="/admin/admin.css">
   <script src="/admin/admin.js" defer></script>
 </head>
@@ -31,78 +31,78 @@
 </defs></svg>
 
 <section id="login-view" class="login-view" aria-labelledby="login-title">
-  <div class="login-brand"><span class="brand-mark"><svg><use href="#i-arrow"/></svg></span><span>Found<span class="brand-caption">失物招领站点</span></span></div>
+  <div class="login-brand"><span class="brand-mark"><svg><use href="#i-arrow"/></svg></span><span>Found<span class="brand-caption">Lost and found station</span></span></div>
   <div class="login-card">
     <span class="eyebrow">STATION CONTROL</span>
-    <h1 id="login-title">让每一件物品<br>都有归处。</h1>
-    <p class="login-copy">登录管理终端，查看设备运行、储存隔间与物品记录。</p>
+    <h1 id="login-title">A place for every<br>lost belonging.</h1>
+    <p class="login-copy">Sign in to monitor the station, manage compartments, and review inventory.</p>
     <form id="login-form">
-      <label for="password">管理员密码</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="输入站点管理员密码">
-      <p id="login-status" class="form-message" role="status">正在检查管理服务…</p>
-      <button id="login-submit" class="button primary" type="submit" disabled><svg><use href="#i-lock"/></svg>登录管理台</button>
+      <label for="password">Admin password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="Enter the station admin password">
+      <p id="login-status" class="form-message" role="status">Checking admin service…</p>
+      <button id="login-submit" class="button primary" type="submit" disabled><svg><use href="#i-lock"/></svg>Sign in</button>
     </form>
-    <p class="login-footnote"><svg><use href="#i-lock"/></svg>仅供站点工作人员使用</p>
+    <p class="login-footnote"><svg><use href="#i-lock"/></svg>For station staff only</p>
   </div>
-  <p class="login-bottom">Found · 连接物品与它的主人</p>
+  <p class="login-bottom">Found · Bringing belongings back to their owners</p>
 </section>
 
 <div id="dashboard" class="dashboard" hidden>
   <aside class="sidebar">
-    <a class="brand" href="#overview" aria-label="Found 管理台首页"><span class="brand-mark"><svg><use href="#i-arrow"/></svg></span><span>Found<small>站点管理台</small></span></a>
-    <div class="sidebar-label">工作空间</div>
-    <nav aria-label="管理导航">
-      <a href="#overview" class="nav-link active"><svg><use href="#i-chart"/></svg><span>运行概览</span></a>
-      <a href="#compartments" class="nav-link"><svg><use href="#i-grid"/></svg><span>储存隔间</span><span id="nav-slot-count" class="nav-count">—</span></a>
-      <a href="#inventory" class="nav-link"><svg><use href="#i-box"/></svg><span>物品记录</span></a>
-      <a href="#activity" class="nav-link"><svg><use href="#i-history"/></svg><span>操作记录</span></a>
+    <a class="brand" href="#overview" aria-label="Found dashboard home"><span class="brand-mark"><svg><use href="#i-arrow"/></svg></span><span>Found<small>Station control</small></span></a>
+    <div class="sidebar-label">Workspace</div>
+    <nav aria-label="Admin navigation">
+      <a href="#overview" aria-label="Station overview" title="Station overview" class="nav-link active"><svg><use href="#i-chart"/></svg><span>Station overview</span></a>
+      <a href="#compartments" aria-label="Compartments" title="Compartments" class="nav-link"><svg><use href="#i-grid"/></svg><span>Compartments</span><span id="nav-slot-count" class="nav-count">—</span></a>
+      <a href="#inventory" aria-label="Inventory" title="Inventory" class="nav-link"><svg><use href="#i-box"/></svg><span>Inventory</span></a>
+      <a href="#activity" aria-label="Activity" title="Activity" class="nav-link"><svg><use href="#i-history"/></svg><span>Activity</span></a>
     </nav>
-    <div class="sidebar-station"><span class="station-dot"></span><div><strong id="sidebar-host">等待连接</strong><span id="sidebar-address">本地站点</span></div></div>
-    <p class="sidebar-note">物联网管理终端<span>每 3 秒自动更新</span></p>
+    <div class="sidebar-station"><span class="station-dot"></span><div><strong id="sidebar-host">Awaiting connection</strong><span id="sidebar-address">Local station</span></div></div>
+    <p class="sidebar-note">IoT management console<span>Updates every 3 seconds</span></p>
   </aside>
   <main>
-    <header class="topbar"><div class="breadcrumb">工作空间 <span>/</span> 站点总览</div><div class="topbar-actions"><span id="freshness" class="freshness" role="status">正在连接</span><button id="refresh-button" class="icon-button" aria-label="刷新所有数据" title="刷新所有数据"><svg><use href="#i-refresh"/></svg></button><button id="logout-button" class="button quiet small"><svg><use href="#i-logout"/></svg><span>退出</span></button></div></header>
+    <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> Station overview</div><div class="topbar-actions"><span id="freshness" class="freshness" role="status">Connecting</span><button id="refresh-button" class="icon-button" aria-label="Refresh all data" title="Refresh all data"><svg><use href="#i-refresh"/></svg></button><button id="logout-button" aria-label="Sign out" title="Sign out" class="button quiet small"><svg><use href="#i-logout"/></svg><span>Sign out</span></button></div></header>
     <div class="workspace">
       <section id="overview" class="section" aria-labelledby="overview-title">
-        <div class="section-heading hero-heading"><div><div class="eyebrow">FOUND / DEVICE OVERVIEW</div><h1 id="overview-title">站点运行概览</h1><p id="device-summary">正在读取设备信息与真实运行数据。</p></div><span id="driver-badge" class="badge neutral">等待数据</span></div>
+        <div class="section-heading hero-heading"><div><div class="eyebrow">FOUND / DEVICE OVERVIEW</div><h1 id="overview-title">Station overview</h1><p id="device-summary">Loading device information and live telemetry.</p></div><span id="driver-badge" class="badge neutral">Awaiting data</span></div>
         <div id="connection-notice" class="notice warning" role="status" hidden></div>
-        <div id="pending-journal" class="notice pending-notice" hidden><svg><use href="#i-alert"/></svg><div><strong>有一条待核实的开门请求</strong><p id="pending-description"></p><p id="pending-status" class="muted"></p><div class="button-row"><button id="pending-check" class="button small">查询状态</button><button id="pending-retry" class="button small">确认后重试原请求</button></div></div></div>
+        <div id="pending-journal" class="notice pending-notice" hidden><svg><use href="#i-alert"/></svg><div><strong>An opening request needs verification</strong><p id="pending-description"></p><p id="pending-status" class="muted"></p><div class="button-row"><button id="pending-check" class="button small">Check status</button><button id="pending-retry" class="button small">Review and retry original request</button></div></div></div>
         <div class="stat-grid">
-          <article class="stat-card"><span>已入柜物品</span><strong id="count-stored">—</strong><span class="stat-note"><i class="dot green"></i>等待主人领取</span></article>
-          <article class="stat-card"><span>空闲隔间</span><strong><span id="count-free">—</span><small id="count-capacity"> / —</small></strong><span class="stat-note">每格存放一件物品</span></article>
-          <article class="stat-card"><span>累计已领取</span><strong id="count-collected">—</strong><span class="stat-note"><svg><use href="#i-check"/></svg>物品已归还主人</span></article>
-          <article class="stat-card attention"><span>待工作人员处理</span><strong id="count-attention">—</strong><span class="stat-note">中断操作与待核实状态</span></article>
+          <article class="stat-card"><span>Stored items</span><strong id="count-stored">—</strong><span class="stat-note"><i class="dot green"></i>Awaiting their owners</span></article>
+          <article class="stat-card"><span>Available compartments</span><strong><span id="count-free">—</span><small id="count-capacity"> / —</small></strong><span class="stat-note">One item per compartment</span></article>
+          <article class="stat-card"><span>Total collected</span><strong id="count-collected">—</strong><span class="stat-note"><svg><use href="#i-check"/></svg>Returned to their owners</span></article>
+          <article class="stat-card attention"><span>Needs staff attention</span><strong id="count-attention">—</strong><span class="stat-note">Interrupted or unverified operations</span></article>
         </div>
         <div class="telemetry-layout">
-          <article class="panel performance-panel"><div class="panel-heading"><div><h2><svg><use href="#i-cpu"/></svg>设备性能</h2><p>实时采样 · 最近运行趋势</p></div><span id="system-uptime" class="caption">—</span></div>
+          <article class="panel performance-panel"><div class="panel-heading"><div><h2><svg><use href="#i-cpu"/></svg>Device performance</h2><p>Live samples · Recent trends</p></div><span id="system-uptime" class="caption">—</span></div>
             <div class="metric-grid">
-              <div class="metric"><div class="metric-label"><svg><use href="#i-cpu"/></svg>CPU 使用率</div><div class="metric-value" id="cpu-value">—</div><div id="cpu-chart" class="sparkline" aria-label="CPU 使用率历史"></div><p id="load-value">负载 未提供</p></div>
-              <div class="metric"><div class="metric-label"><svg><use href="#i-memory"/></svg>内存使用率</div><div class="metric-value" id="memory-value">—</div><div id="memory-chart" class="sparkline" aria-label="内存使用率历史"></div><p id="memory-detail">容量 未提供</p></div>
-              <div class="metric"><div class="metric-label"><svg><use href="#i-temp"/></svg>CPU 温度</div><div class="metric-value" id="temperature-value">—</div><div id="temperature-chart" class="sparkline" aria-label="CPU 温度历史"></div><p>硬件温度读数</p></div>
-              <div class="metric"><div class="metric-label"><svg><use href="#i-disk"/></svg>存储空间</div><div class="metric-value" id="disk-value">—</div><div class="capacity-track"><span id="disk-meter"></span></div><p id="disk-detail">容量 未提供</p></div>
+              <div class="metric"><div class="metric-label"><svg><use href="#i-cpu"/></svg>CPU usage</div><div class="metric-value" id="cpu-value">—</div><div id="cpu-chart" class="sparkline" aria-label="CPU usage history"></div><p id="load-value">Load unavailable</p></div>
+              <div class="metric"><div class="metric-label"><svg><use href="#i-memory"/></svg>Memory usage</div><div class="metric-value" id="memory-value">—</div><div id="memory-chart" class="sparkline" aria-label="Memory usage history"></div><p id="memory-detail">Capacity unavailable</p></div>
+              <div class="metric"><div class="metric-label"><svg><use href="#i-temp"/></svg>CPU temperature</div><div class="metric-value" id="temperature-value">—</div><div id="temperature-chart" class="sparkline" aria-label="CPU temperature history"></div><p>Hardware temperature reading</p></div>
+              <div class="metric"><div class="metric-label"><svg><use href="#i-disk"/></svg>Disk usage</div><div class="metric-value" id="disk-value">—</div><div class="capacity-track"><span id="disk-meter"></span></div><p id="disk-detail">Capacity unavailable</p></div>
             </div>
           </article>
-          <article class="panel service-panel"><div class="panel-heading"><h2><svg><use href="#i-network"/></svg>服务状态</h2><span id="service-health" class="badge neutral">待检测</span></div><dl class="service-list"><div><dt>HTTP API</dt><dd id="api-status">—</dd></div><div><dt>SQLite 数据库</dt><dd id="database-status">—</dd></div><div><dt>传输连接</dt><dd id="tls-status">—</dd></div><div><dt>AI 识别</dt><dd id="ai-status">—</dd></div><div><dt>识别队列</dt><dd id="queue-status">—</dd></div></dl><div class="network-summary"><span>网络吞吐</span><strong id="network-rate">—</strong><p id="network-total">接收 / 发送累计 未提供</p></div><div id="network-chart" class="sparkline network-chart" aria-label="接收速率历史"></div><div id="device-info" class="device-info"></div></article>
+          <article class="panel service-panel"><div class="panel-heading"><h2><svg><use href="#i-network"/></svg>Service health</h2><span id="service-health" class="badge neutral">Awaiting check</span></div><dl class="service-list"><div><dt>HTTP API</dt><dd id="api-status">—</dd></div><div><dt>SQLite database</dt><dd id="database-status">—</dd></div><div><dt>Connection</dt><dd id="tls-status">—</dd></div><div><dt>AI recognition</dt><dd id="ai-status">—</dd></div><div><dt>Recognition queue</dt><dd id="queue-status">—</dd></div></dl><div class="network-summary"><span>Network throughput</span><strong id="network-rate">—</strong><p id="network-total">Receive / send totals unavailable</p></div><div id="network-chart" class="sparkline network-chart" aria-label="Receive rate history"></div><div id="device-info" class="device-info"></div></article>
         </div>
       </section>
       <section id="compartments" class="section" aria-labelledby="compartment-title">
-        <div class="section-heading"><div><h2 id="compartment-title">储存隔间</h2><p>软件状态与现场检查分开记录，手动开门不会标记物品已领取。</p></div><span class="section-label"><svg><use href="#i-grid"/></svg>01—04</span></div>
-        <div id="slot-grid" class="slot-grid"><p class="empty-state">正在读取隔间状态…</p></div>
-        <div id="recovery-panel" class="panel recovery-panel" hidden><div class="panel-heading"><div><h2><svg><use href="#i-alert"/></svg>待核实操作</h2><p>完成现场检查后再确认。开门和物品入柜、领取是独立步骤。</p></div><span id="recovery-count" class="badge warning"></span></div><div id="recovery-list"></div></div>
+        <div class="section-heading"><div><h2 id="compartment-title">Compartments</h2><p>Software status does not verify the physical door. Manual opening does not mark an item as collected.</p></div><span class="section-label"><svg><use href="#i-grid"/></svg>01—04</span></div>
+        <div id="slot-grid" class="slot-grid"><p class="empty-state">Loading compartment status…</p></div>
+        <div id="recovery-panel" class="panel recovery-panel" hidden><div class="panel-heading"><div><h2><svg><use href="#i-alert"/></svg>Operations to verify</h2><p>Inspect the compartment before confirming. Opening the door does not confirm a deposit or collection.</p></div><span id="recovery-count" class="badge warning"></span></div><div id="recovery-list"></div></div>
       </section>
       <section id="inventory" class="section" aria-labelledby="inventory-title">
-        <div class="section-heading"><div><h2 id="inventory-title">物品记录</h2><p>查看入柜、已领取及历史照片记录。</p></div><span id="inventory-total" class="section-label">— 条记录</span></div>
-        <div class="panel inventory-panel"><form id="inventory-filter" class="filter-bar"><label class="search-field"><svg><use href="#i-search"/></svg><span class="sr-only">搜索物品</span><input id="item-query" type="search" placeholder="搜索物品名称、标签、备注或编号" maxlength="200"></label><label class="status-filter"><span class="sr-only">物品状态</span><select id="item-status"><option value="">全部状态</option><option value="stored">已入柜</option><option value="collected">已领取</option><option value="recorded">仅登记</option><option value="deposit_pending">待放入确认</option><option value="retrieval_pending">待领取确认</option><option value="recovery">待检查</option></select></label><button type="submit" class="button">搜索</button></form>
-          <div id="inventory-error" class="inline-error" role="status" hidden></div><div class="table-scroll"><table><thead><tr><th>物品</th><th>格号</th><th>状态</th><th>登记时间</th><th><span class="sr-only">操作</span></th></tr></thead><tbody id="item-rows"></tbody></table></div><p id="inventory-empty" class="empty-state" hidden>没有符合条件的物品。</p><div class="pagination"><span id="page-label">正在读取记录…</span><div class="button-row"><button id="previous-page" class="button small" disabled>上一页</button><button id="next-page" class="button small" disabled>下一页</button></div></div>
+        <div class="section-heading"><div><h2 id="inventory-title">Inventory</h2><p>Review stored and collected items, including historical photo records.</p></div><span id="inventory-total" class="section-label">Records: —</span></div>
+        <div class="panel inventory-panel"><form id="inventory-filter" class="filter-bar"><label class="search-field"><svg><use href="#i-search"/></svg><span class="sr-only">Search inventory</span><input id="item-query" type="search" placeholder="Search names, tags, notes, or IDs" maxlength="200"></label><label class="status-filter"><span class="sr-only">Item status</span><select id="item-status"><option value="">All statuses</option><option value="stored">Stored</option><option value="collected">Collected</option><option value="recorded">Recorded</option><option value="deposit_pending">Awaiting deposit</option><option value="retrieval_pending">Awaiting collection</option><option value="recovery">Needs inspection</option></select></label><button type="submit" class="button">Search</button></form>
+          <div id="inventory-error" class="inline-error" role="status" hidden></div><div class="table-scroll"><table><thead><tr><th>Item</th><th>Compartment</th><th>Status</th><th>Recorded at</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody id="item-rows"></tbody></table></div><p id="inventory-empty" class="empty-state" hidden>No items match your filters.</p><div class="pagination"><span id="page-label">Loading records…</span><div class="button-row"><button id="previous-page" class="button small" disabled>Previous</button><button id="next-page" class="button small" disabled>Next</button></div></div>
         </div>
       </section>
-      <section id="activity" class="section" aria-labelledby="activity-title"><div class="section-heading"><div><h2 id="activity-title">最近操作</h2><p>存入、领取与工作人员手动开门的操作记录。</p></div><span id="activity-count" class="section-label">—</span></div><div class="panel"><div id="activity-list" class="activity-list"></div><p id="activity-empty" class="empty-state">等待操作记录…</p></div></section>
-      <footer class="page-footer"><span>Found · 失物招领站点管理</span><span id="footer-time">尚未更新</span></footer>
+      <section id="activity" class="section" aria-labelledby="activity-title"><div class="section-heading"><div><h2 id="activity-title">Activity</h2><p>A history of deposits, collections, and manual openings by staff.</p></div><span id="activity-count" class="section-label">—</span></div><div class="panel"><div id="activity-list" class="activity-list"></div><p id="activity-empty" class="empty-state">Loading activity…</p></div></section>
+      <footer class="page-footer"><span>Found · Lost and found station management</span><span id="footer-time">Not yet updated</span></footer>
     </div>
   </main>
 </div>
 <div id="toast" class="toast" role="status" hidden></div>
-<dialog id="action-dialog" aria-labelledby="dialog-title"><form id="action-form"><div class="dialog-heading"><span id="dialog-icon" class="dialog-icon"></span><button type="button" class="icon-button" data-close-dialog aria-label="关闭对话框"><svg><use href="#i-close"/></svg></button></div><div class="eyebrow" id="dialog-eyebrow">工作人员操作</div><h2 id="dialog-title"></h2><p id="dialog-description" class="dialog-description"></p><div id="dialog-content"></div><div id="reason-field" hidden><label for="open-reason">开门原因 <span class="required">必填</span></label><textarea id="open-reason" maxlength="200" rows="3" placeholder="例如：检查门锁状态，保持原物品不变"></textarea><span class="field-note">将与本次操作一起记录，最多 200 字。</span></div><label id="physical-check" class="check-field" hidden><input id="physical-confirmed" type="checkbox"><span id="physical-check-label"></span></label><p id="dialog-error" class="form-message error" role="alert" hidden></p><div class="dialog-actions"><button id="dialog-cancel" type="button" class="button" data-close-dialog>取消</button><button id="dialog-submit" type="submit" class="button primary"></button></div></form></dialog>
-<dialog id="item-dialog" aria-labelledby="item-dialog-title"><div class="dialog-heading"><span class="eyebrow">物品记录</span><button type="button" class="icon-button" data-close-item aria-label="关闭物品详情"><svg><use href="#i-close"/></svg></button></div><img id="item-detail-image" class="item-detail-image" alt="物品照片" hidden><div id="item-detail-placeholder" class="image-placeholder">暂无可用照片</div><h2 id="item-dialog-title"></h2><div id="item-detail-meta" class="detail-meta"></div><div id="item-detail-tags" class="tags"></div><p id="item-detail-note" class="detail-note"></p><p id="item-detail-error" class="form-message error" hidden></p><div class="dialog-actions"><button type="button" class="button" data-close-item>关闭</button><button id="retry-recognition" class="button primary" type="button">重试识别标签</button></div></dialog>
+<dialog id="action-dialog" aria-labelledby="dialog-title"><form id="action-form"><div class="dialog-heading"><span id="dialog-icon" class="dialog-icon"></span><button type="button" class="icon-button" data-close-dialog aria-label="Close dialog"><svg><use href="#i-close"/></svg></button></div><div class="eyebrow" id="dialog-eyebrow">Staff action</div><h2 id="dialog-title"></h2><p id="dialog-description" class="dialog-description"></p><div id="dialog-content"></div><div id="reason-field" hidden><label for="open-reason">Reason for opening <span class="required">Required</span></label><textarea id="open-reason" maxlength="200" rows="3" placeholder="For example: inspect the lock without changing the contents"></textarea><span class="field-note">Saved with this operation. Maximum 200 characters.</span></div><label id="physical-check" class="check-field" hidden><input id="physical-confirmed" type="checkbox"><span id="physical-check-label"></span></label><p id="dialog-error" class="form-message error" role="alert" hidden></p><div class="dialog-actions"><button id="dialog-cancel" type="button" class="button" data-close-dialog>Cancel</button><button id="dialog-submit" type="submit" class="button primary"></button></div></form></dialog>
+<dialog id="item-dialog" aria-labelledby="item-dialog-title"><div class="dialog-heading"><span class="eyebrow">Inventory</span><button type="button" class="icon-button" data-close-item aria-label="Close item details"><svg><use href="#i-close"/></svg></button></div><img id="item-detail-image" class="item-detail-image" alt="Item photo" hidden><div id="item-detail-placeholder" class="image-placeholder">No photo available</div><h2 id="item-dialog-title"></h2><div id="item-detail-meta" class="detail-meta"></div><div id="item-detail-tags" class="tags"></div><p id="item-detail-note" class="detail-note"></p><p id="item-detail-error" class="form-message error" hidden></p><div class="dialog-actions"><button type="button" class="button" data-close-item>Close</button><button id="retry-recognition" class="button primary" type="button">Retry tag recognition</button></div></dialog>
 </body>
 </html>
