@@ -144,11 +144,12 @@ def configured_driver(host, mode=None, mapping=None):
 
 
 class LockerStore:
-    def __init__(self, connect, data_dir, driver=None):
+    def __init__(self, connect, data_dir, driver=None, before_pulse=None):
         self.connect = connect
         self.directory = Path(data_dir)
         self.driver = driver
         self.enabled = driver is not None
+        self.before_pulse = before_pulse
         self.lock = threading.RLock()
         with self._serialized():
             db = self.connect()
@@ -268,6 +269,8 @@ class LockerStore:
                 stream.write(str(time.time()))
                 stream.flush()
                 os.fsync(stream.fileno())
+        if self.before_pulse is not None:
+            self.before_pulse(compartment)
         self.driver.pulse(compartment)
 
     def snapshot(self):

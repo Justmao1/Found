@@ -278,7 +278,9 @@ class AdminHTTPTests(unittest.TestCase):
         self.assertEqual(body["inventory"]["total"], 2)
         self.assertEqual(body["inventory"]["stored"], 1)
         self.assertEqual(body["inventory"]["recorded"], 1)
-        self.assertEqual(body["capabilities"], {"door_sensor": False, "physical_feedback": False})
+        self.assertEqual(body["capabilities"], {"door_sensor": False, "physical_feedback": False, "vibration_sensor": False})
+        self.assertEqual(body["vibration"]["status"], "disabled")
+        self.assertEqual(body["vibration"]["events"], [])
         slots = body["lockers"]["compartments"]
         self.assertEqual([(slot["gpio"], slot["pin"]) for slot in slots], [(17, 11), (26, 37), (13, 33), (5, 29)])
         self.assertTrue(all(slot["door_state"] == "unknown" and slot["output_level"] is None for slot in slots))

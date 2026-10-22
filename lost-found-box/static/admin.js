@@ -14,10 +14,10 @@
   };
   const state = {
     authenticated: false, epoch: 0, overview: null, lastSuccess: 0, online: false,
-    pollTimer: null, pollBusy: false, mutationBusy: false, pending: null, pendingOperation: null,
+    pollTimer: null, pollBusy: false, overviewRevision: 0, mutationBusy: false, pending: null, pendingOperation: null,
     pendingMessage: '', journalError: '', items: [], itemTotal: 0, offset: 0, limit: 25,
     query: '', status: '', itemSequence: 0, itemController: null, itemBusy: false,
-    inventoryFingerprint: '', inventoryLoadedAt: 0, selectedItem: null, dialog: null, toastTimer: null
+    inventoryFingerprint: '', inventoryLoadedAt: 0, selectedItem: null, dialog: null, toastTimer: null, vibration: null
   };
 
   function text(id, value) { $(id).textContent = value == null ? '—' : String(value); }
@@ -228,7 +228,7 @@
     clearTimeout(state.pollTimer); state.pollTimer = null;
     $('dashboard').hidden = !authenticated; $('login-view').hidden = authenticated;
     if (!authenticated) {
-      state.online = false; state.overview = null; state.lastSuccess = 0; state.inventoryFingerprint = ''; state.inventoryLoadedAt = 0;
+      state.online = false; state.overview = null; state.vibration = null; state.lastSuccess = 0; state.inventoryFingerprint = ''; state.inventoryLoadedAt = 0;
       state.itemController?.abort(); state.items = []; state.selectedItem = null;
       if ($('action-dialog').open) $('action-dialog').close();
       if ($('item-dialog').open) $('item-dialog').close();
@@ -258,12 +258,13 @@
   }
   async function refreshDashboard() {
     if (!state.authenticated || document.hidden || state.pollBusy) return;
+    if (state.mutationBusy) { schedulePoll(); return; }
     state.pollBusy = true;
-    const epoch = state.epoch;
+    const epoch = state.epoch, revision = state.overviewRevision;
     updateControls();
     try {
       const data = await api('/api/admin/overview');
-      if (epoch !== state.epoch || !state.authenticated) return;
+      if (epoch !== state.epoch || revision !== state.overviewRevision || !state.authenticated) return;
       if (!data.device || !data.metrics || !data.lockers || !Array.isArray(data.lockers.compartments)) throw new Error("Station data is incomplete. Check the server version.");
       state.overview = data; state.online = true; state.lastSuccess = Date.now();
       renderOverview(data);
@@ -273,7 +274,7 @@
         await loadItems();
       }
     } catch (error) {
-      if (epoch === state.epoch) {
+      if (epoch === state.epoch && revision === state.overviewRevision) {
         state.online = false;
         text('connection-notice', "Connection lost. " + error.message);
         $('connection-notice').hidden = false;
@@ -289,6 +290,7 @@
     $('freshness').className = 'freshness ' + (current ? 'live' : 'stale');
     text('freshness', current ? (age < 3 ? "Live" : age + " s ago") : (age == null ? "Not connected" : "Data is stale"));
     document.querySelector('.station-dot').classList.toggle('online', !!current);
+    if (!current) badge($('vibration-status'), 'recorded', 'No live data');
     if (current) $('connection-notice').hidden = true;
     else if (state.overview && state.online) {
       text('connection-notice', "Reconnecting to the station…");
@@ -309,7 +311,7 @@
     badge($('driver-badge'), lockers.enabled ? 'free' : 'recorded', driverName);
     text('count-stored', numeric(inventory.stored)); text('count-collected', numeric(inventory.collected));
     text('count-free', slots.filter((slot) => slot.state === 'free').length); text('count-capacity', ' / ' + slots.length);
-    text('count-attention', visitor.length + manual.length); text('nav-slot-count', slots.length);
+    text('count-attention', visitor.length + manual.length + (data.vibration?.active_alert ? 1 : 0)); text('nav-slot-count', slots.length);
     text('cpu-value', percent(metrics.cpu_percent)); text('memory-value', percent(metrics.memory?.percent));
     text('temperature-value', finite(metrics.cpu_temperature_celsius) ? numeric(metrics.cpu_temperature_celsius, 1) + '°C' : "Not available");
     text('disk-value', percent(metrics.disk?.percent));
@@ -330,6 +332,7 @@
     text('network-total', "Total received ↓ " + bytes(metrics.network?.rx_bytes) + ' / ↑ ' + bytes(metrics.network?.tx_bytes));
     text('device-info', (device.platform || "System information not available") + " · Service " + uptime(device.service_uptime_seconds));
     text('footer-time', "Server update: " + timestamp(data.generated_at));
+    renderVibration(data.vibration);
     keyed($('slot-grid'), slots, (slot) => slot.id, createSlot, updateSlot);
     const recoveries = manual.map((op) => ({ ...op, recoveryKind: 'manual' })).concat(visitor.map((op) => ({ ...op, recoveryKind: 'visitor' })));
     $('recovery-panel').hidden = !recoveries.length; text('recovery-count', recoveries.length + " pending");
@@ -342,6 +345,43 @@
     const activity = Array.isArray(data.activity) ? data.activity : [];
     keyed($('activity-list'), activity, (entry) => entry.type + '-' + entry.id, createActivity, updateActivity);
     $('activity-empty').hidden = !!activity.length; text('activity-empty', "No operations recorded yet."); text('activity-count', "Recent events: " + activity.length);
+  }
+
+  function vibrationTime(value) {
+    if (!finite(value)) return 'No vibration yet';
+    return new Date(value * 1000).toLocaleString('en-GB', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  }
+  function renderVibration(sensor) {
+    state.vibration = sensor || null;
+    const active = sensor?.active_alert;
+    const failed = sensor?.status === 'error';
+    const monitoring = sensor?.enabled && !failed;
+    const caption = !sensor ? 'Unavailable' : failed ? 'Unavailable' : !sensor.enabled ? 'Not enabled' : active ? 'Shaking detected' : sensor.suppressed ? 'Settling' : 'Monitoring';
+    badge($('vibration-status'), failed || active ? 'uncertain' : monitoring ? 'free' : 'recorded', caption);
+    text('vibration-rule', sensor ? numeric(sensor.threshold) + ' triggers within ' + numeric(sensor.window_seconds) + ' seconds to alert' : 'Sensor status is unavailable.');
+    text('vibration-recent', monitoring ? numeric(sensor.recent_triggers) + ' / ' + numeric(sensor.threshold) : '—');
+    text('vibration-total', sensor ? numeric(sensor.total_triggers) : '—');
+    text('vibration-last', sensor ? vibrationTime(sensor.last_triggered_at) : '—');
+    text('vibration-pin', sensor ? 'GPIO ' + numeric(sensor.gpio) + ' · Pin ' + numeric(sensor.pin) : 'Sensor input');
+    text('vibration-level', !monitoring ? '—' : sensor.input_level === 1 ? 'High' : sensor.input_level === 0 ? 'Low' : '—');
+    $('vibration-alert').hidden = !active;
+    $('vibration-panel').classList.toggle('has-alert', !!active);
+    text('vibration-alert-time', active ? vibrationTime(active.triggered_at) + ' · ' + numeric(active.trigger_count) + ' triggers' : '');
+    $('vibration-error').hidden = !sensor?.error;
+    text('vibration-error', sensor?.error || '');
+    const events = Array.isArray(sensor?.events) ? sensor.events : [];
+    text('vibration-event-count', events.length);
+    $('vibration-empty').hidden = !!events.length;
+    keyed($('vibration-events'), events, (event) => event.id, () => {
+      const row = element('div', 'vibration-event');
+      row.append(element('time'), element('span', 'muted'), element('span', 'badge'));
+      return row;
+    }, (row, event) => {
+      row.querySelector('time').textContent = vibrationTime(event.triggered_at);
+      row.querySelector('.muted').textContent = numeric(event.trigger_count) + ' triggers';
+      badge(row.querySelector('.badge'), event.cleared_at ? 'completed' : 'uncertain', event.cleared_at ? 'Cleared' : 'Active');
+    });
+    updateControls();
   }
 
   function chart(container, history, key, ceiling) {
@@ -495,6 +535,8 @@
   function updateControls() {
     $('refresh-button').disabled = state.pollBusy || state.mutationBusy;
     $('logout-button').disabled = state.mutationBusy;
+    $('clear-vibration-alert').disabled = !canAct() || !state.vibration?.active_alert;
+    $('clear-vibration-alert').setAttribute('aria-busy', String(state.mutationBusy));
     $('pending-check').disabled = !state.authenticated || state.mutationBusy || !state.pending;
     $('pending-retry').disabled = !canAct() || !state.pending;
     $('previous-page').disabled = state.itemBusy || state.offset <= 0;
@@ -606,6 +648,23 @@
     try { await api('/api/admin/logout', { method: 'POST' }); setAuthenticated(false, "Signed out."); $('password').value = ''; }
     catch (error) { toast("Unable to confirm sign-out: " + error.message); }
     finally { state.mutationBusy = false; updateControls(); }
+  });
+  $('clear-vibration-alert').addEventListener('click', async () => {
+    const alert = state.vibration?.active_alert;
+    if (!canAct() || !alert) return;
+    state.overviewRevision += 1;
+    state.mutationBusy = true; const epoch = state.epoch; updateControls();
+    text('clear-vibration-alert', 'Clearing…');
+    try {
+      const result = await api('/api/admin/vibration/clear', { method: 'POST', body: { alert_id: alert.id } });
+      if (epoch !== state.epoch) return;
+      if (!result.vibration || result.vibration.active_alert?.id === alert.id) throw new Error('Unable to confirm the alert was cleared.');
+      renderVibration(result.vibration); toast('Alert cleared.');
+    } catch (error) { if (epoch === state.epoch) toast(error.message); }
+    finally {
+      state.mutationBusy = false; text('clear-vibration-alert', 'Clear alert'); updateControls();
+      if (epoch === state.epoch && state.authenticated) refreshDashboard();
+    }
   });
   $('refresh-button').addEventListener('click', () => { state.inventoryFingerprint = ''; refreshDashboard(); });
   $('pending-check').addEventListener('click', async () => { $('pending-check').disabled = true; await recoverPending(); refreshDashboard(); updateControls(); });

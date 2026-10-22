@@ -9,6 +9,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import queue
@@ -25,6 +26,7 @@ import search
 import speech
 import lockers
 import iot_admin
+import vibration
 
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
@@ -133,7 +135,8 @@ def item_json(row):
 class PhotoServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, data_dir, auto_recognize=True, locker_driver=None):
+    def __init__(self, address, data_dir, auto_recognize=True, locker_driver=None,
+                 vibration_enabled=False, vibration_api=None):
         directory = Path(data_dir)
         directory.mkdir(parents=True, exist_ok=True)
         self.db_path = directory / "items.sqlite3"
@@ -144,6 +147,7 @@ class PhotoServer(ThreadingHTTPServer):
         self.ai_pending = {}
         self.ai_queue = queue.Queue(maxsize=64)
         self.ai_stopping = threading.Event()
+        self.ai_worker = None
         db = self.connect_db()
         try:
             db.execute("PRAGMA journal_mode=WAL")
@@ -165,28 +169,35 @@ class PhotoServer(ThreadingHTTPServer):
         finally:
             db.close()
         self.lockers = lockers.LockerStore(self.connect_db, directory, locker_driver)
+        self.vibration = vibration.VibrationMonitor(self.connect_db, enabled=vibration_enabled, api=vibration_api)
+        self.lockers.before_pulse = lambda _compartment: self.vibration.suppress_for(2)
         self.admin = iot_admin.Administration(self, item_json)
         super().__init__(address, PhotoHandler)
-        self.ai_worker = threading.Thread(target=self._recognition_worker, daemon=True,
-                                          name="lost-found-recognition")
-        self.ai_worker.start()
-        if auto_recognize and vision.configuration_status()["configured"]:
-            db = self.connect_db()
-            try:
-                rows = db.execute("""SELECT items.id, recognitions.result AS recognition,
-                    recognition_jobs.state AS recognition_state FROM items
-                    LEFT JOIN recognitions ON recognitions.item_id = items.id
-                    LEFT JOIN recognition_jobs ON recognition_jobs.item_id = items.id
-                    WHERE recognition_jobs.state IS NULL OR recognition_jobs.state != 'failed'
-                    ORDER BY items.created_at DESC, items.rowid DESC LIMIT 100""").fetchall()
-            finally:
-                db.close()
-            for row in rows:
-                if vision.cached_recognition(row["recognition"]) is None:
-                    try:
-                        self.enqueue_recognition(row["id"])
-                    except vision.VisionError:
-                        break
+        try:
+            self.ai_worker = threading.Thread(target=self._recognition_worker, daemon=True,
+                                              name="lost-found-recognition")
+            self.ai_worker.start()
+            self.vibration.start()
+            if auto_recognize and vision.configuration_status()["configured"]:
+                db = self.connect_db()
+                try:
+                    rows = db.execute("""SELECT items.id, recognitions.result AS recognition,
+                        recognition_jobs.state AS recognition_state FROM items
+                        LEFT JOIN recognitions ON recognitions.item_id = items.id
+                        LEFT JOIN recognition_jobs ON recognition_jobs.item_id = items.id
+                        WHERE recognition_jobs.state IS NULL OR recognition_jobs.state != 'failed'
+                        ORDER BY items.created_at DESC, items.rowid DESC LIMIT 100""").fetchall()
+                finally:
+                    db.close()
+                for row in rows:
+                    if vision.cached_recognition(row["recognition"]) is None:
+                        try:
+                            self.enqueue_recognition(row["id"])
+                        except vision.VisionError:
+                            break
+        except BaseException:
+            self.server_close()
+            raise
 
     def connect_db(self):
         db = sqlite3.connect(self.db_path, timeout=15)
@@ -343,9 +354,11 @@ class PhotoServer(ThreadingHTTPServer):
                 self.ai_queue.task_done()
 
     def server_close(self):
+        self.vibration.close()
         self.ai_stopping.set()
         super().server_close()
-        self.ai_worker.join(timeout=35)
+        if self.ai_worker is not None and self.ai_worker.ident is not None:
+            self.ai_worker.join(timeout=35)
         with self.ai_lock:
             while True:
                 try:
@@ -500,6 +513,12 @@ class PhotoHandler(BaseHTTPRequestHandler):
                 raise vision.VisionError(400, "The sign-out request must be an empty object.")
             admin.sessions.logout(cookie)
             self._send(200, {"authenticated": False}, headers={"Set-Cookie": admin.sessions.cookie("", secure)})
+            return
+        if path == "/api/admin/vibration/clear":
+            if set(payload) != {"alert_id"}:
+                raise vision.VisionError(400, "Provide the alert ID.")
+            self.server.vibration.clear_alert(payload["alert_id"])
+            self._send(200, {"vibration": self.server.vibration.snapshot()})
             return
         if path == "/api/admin/manual-open":
             if set(payload) not in ({"request_id", "compartment_id"}, {"request_id", "compartment_id", "reason"}):
@@ -723,7 +742,7 @@ class PhotoHandler(BaseHTTPRequestHandler):
 
 
 def build_server(host, port, data_dir, cert=None, key=None, auto_recognize=True,
-                 locker_mode=None, locker_driver=None):
+                 locker_mode=None, locker_driver=None, vibration_enabled=None, vibration_api=None):
     if bool(cert) != bool(key):
         raise ValueError("--cert 和 --key 必须一起提供")
     try:
@@ -740,9 +759,19 @@ def build_server(host, port, data_dir, cert=None, key=None, auto_recognize=True,
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(cert, key)
-    server = PhotoServer((host, port), data_dir, auto_recognize=auto_recognize, locker_driver=driver)
+    if vibration_enabled is None:
+        configured = os.environ.get("LOST_FOUND_VIBRATION_ENABLED", "0")
+        if configured not in ("0", "1"):
+            raise ValueError("LOST_FOUND_VIBRATION_ENABLED must be 0 or 1.")
+        vibration_enabled = configured == "1"
+    server = PhotoServer((host, port), data_dir, auto_recognize=auto_recognize, locker_driver=driver,
+                         vibration_enabled=vibration_enabled, vibration_api=vibration_api)
     if context:
-        server.socket = context.wrap_socket(server.socket, server_side=True)
+        try:
+            server.socket = context.wrap_socket(server.socket, server_side=True)
+        except Exception:
+            server.server_close()
+            raise
     return server
 
 

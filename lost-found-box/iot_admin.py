@@ -326,4 +326,6 @@ class Administration:
                               "recognition_pending": jobs.get("pending", 0) + jobs.get("processing", 0),
                               "recognition_failed": jobs.get("failed", 0)},
                 "lockers": snapshot, "manual_operations": manual, "activity": activity,
-                "capabilities": {"door_sensor": False, "physical_feedback": False}}
+                "vibration": server.vibration.snapshot(),
+                "capabilities": {"door_sensor": False, "physical_feedback": False,
+                                 "vibration_sensor": server.vibration.enabled}}

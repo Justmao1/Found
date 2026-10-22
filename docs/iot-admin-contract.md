@@ -36,3 +36,7 @@ Each metric history point: `{at:ISO,cpu_percent,memory_percent,cpu_temperature_c
 
 ## Verification
 Backend regression for auth/session/CSRF validation, real telemetry null fallback, pagination, no secrets; manual command idempotency/cooldown/concurrency/crash/restore and exclusion from visitor inventory. Browser test against an isolated simulated server: login, data refresh, filter/search, one-click opening without a form or dialog, automatic software-state restoration, concise failed-operation recovery, lost-response status recovery, offline and narrow viewport. Existing iPad/core integration remains passing. Deployment backs up DB/source, avoids real pulse, verifies HTTPS reads. Real four-lock acceptance remains an on-site action.
+
+## Vibration sensor
+
+The overview adds `vibration` and `capabilities.vibration_sensor` (configured monitoring, not proof of physical wiring continuity). `POST /api/admin/vibration/clear` takes `{alert_id}` and returns `{vibration}`. See [vibration-monitoring.md](vibration-monitoring.md) for GPIO21 wiring, event detection, complete response schema, and persistence. This input-only feature never pulses a relay or mutates item records. The English overview panel uses one Clear alert action and collapsed recent history.
