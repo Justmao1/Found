@@ -87,7 +87,7 @@
         </div>
         <article id="vibration-panel" class="panel vibration-panel" aria-labelledby="vibration-title">
           <div class="panel-heading"><div><h2 id="vibration-title"><svg><use href="#i-vibration"/></svg>Vibration monitoring</h2><p id="vibration-rule">Loading sensor status…</p></div><span id="vibration-status" class="badge neutral" role="status">Awaiting data</span></div>
-          <div id="vibration-alert" class="vibration-alert" hidden><div><strong>Shaking detected</strong><p id="vibration-alert-time"></p></div><button id="clear-vibration-alert" class="button small" type="button">Clear alert</button></div>
+          <div id="vibration-alert" class="vibration-alert" hidden><div><strong>Shaking detected</strong><p id="vibration-alert-time"></p></div><div class="button-row"><button id="view-vibration-alert" class="button small" type="button">View alert</button><button id="clear-vibration-alert" class="button small" type="button">Clear alert</button></div></div>
           <p id="vibration-error" class="inline-error" role="status" hidden></p>
           <dl class="vibration-metrics"><div><dt>Triggers · last 2 s</dt><dd id="vibration-recent">—</dd></div><div><dt>Triggers · this session</dt><dd id="vibration-total">—</dd></div><div><dt>Last vibration</dt><dd id="vibration-last">—</dd></div><div><dt id="vibration-pin">Sensor input</dt><dd id="vibration-level">—</dd></div></dl>
           <details class="vibration-history"><summary>Recent alerts <span id="vibration-event-count">0</span></summary><div id="vibration-events"></div><p id="vibration-empty" class="empty-state">No alerts recorded.</p></details>
@@ -110,6 +110,17 @@
   </main>
 </div>
 <div id="toast" class="toast" role="status" hidden></div>
+<dialog id="vibration-dialog" class="vibration-dialog" role="alertdialog" aria-modal="true" aria-labelledby="vibration-dialog-title" aria-describedby="vibration-dialog-description">
+  <div class="vibration-warning-icon" aria-hidden="true"><svg><use href="#i-alert"/></svg></div>
+  <span class="eyebrow">STATION ALERT</span>
+  <h2 id="vibration-dialog-title" tabindex="-1" autofocus>Shaking detected</h2>
+  <p id="vibration-dialog-description">Repeated vibration detected at the station.<br>Please check the box.</p>
+  <div class="vibration-detection"><svg aria-hidden="true"><use href="#i-vibration"/></svg><div><span>Detected at</span><strong id="vibration-dialog-time"></strong></div><span class="badge danger">Active alert</span></div>
+  <p id="vibration-dialog-offline" class="form-message error" role="status" hidden>Connection lost. Reconnect to clear this alert.</p>
+  <p id="vibration-dialog-error" class="form-message error" role="alert" hidden></p>
+  <div class="dialog-actions"><button id="dismiss-vibration-dialog" class="button" type="button">Dismiss</button><button id="clear-vibration-dialog" class="button danger" type="button">Clear alert</button></div>
+  <p class="vibration-dismiss-note">Dismissing keeps the alert active.</p>
+</dialog>
 <dialog id="action-dialog" aria-labelledby="dialog-title"><form id="action-form"><div class="dialog-heading"><span class="dialog-icon"><svg><use href="#i-check"/></svg></span><button type="button" class="icon-button" data-close-dialog aria-label="Close dialog"><svg><use href="#i-close"/></svg></button></div><h2 id="dialog-title"></h2><p id="dialog-description" class="dialog-description"></p><p id="dialog-error" class="form-message error" role="alert" hidden></p><div class="dialog-actions"><button id="dialog-cancel" type="button" class="button" data-close-dialog>Cancel</button><button id="dialog-submit" type="submit" class="button primary"></button></div></form></dialog>
 <dialog id="item-dialog" aria-labelledby="item-dialog-title"><div class="dialog-heading"><span class="eyebrow">Inventory</span><button type="button" class="icon-button" data-close-item aria-label="Close item details"><svg><use href="#i-close"/></svg></button></div><img id="item-detail-image" class="item-detail-image" alt="Item photo" hidden><div id="item-detail-placeholder" class="image-placeholder">No photo available</div><h2 id="item-dialog-title"></h2><div id="item-detail-meta" class="detail-meta"></div><div id="item-detail-tags" class="tags"></div><p id="item-detail-note" class="detail-note"></p><p id="item-detail-error" class="form-message error" hidden></p><div class="dialog-actions"><button type="button" class="button" data-close-item>Close</button><button id="retry-recognition" class="button primary" type="button">Retry tag recognition</button></div></dialog>
 </body>

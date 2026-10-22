@@ -17,7 +17,8 @@
     pollTimer: null, pollBusy: false, overviewRevision: 0, mutationBusy: false, pending: null, pendingOperation: null,
     pendingMessage: '', journalError: '', items: [], itemTotal: 0, offset: 0, limit: 25,
     query: '', status: '', itemSequence: 0, itemController: null, itemBusy: false,
-    inventoryFingerprint: '', inventoryLoadedAt: 0, selectedItem: null, dialog: null, toastTimer: null, vibration: null
+    inventoryFingerprint: '', inventoryLoadedAt: 0, selectedItem: null, dialog: null, toastTimer: null, vibration: null,
+    dismissedVibrationAlert: null, vibrationClearing: false
   };
 
   function text(id, value) { $(id).textContent = value == null ? '—' : String(value); }
@@ -232,6 +233,7 @@
       state.itemController?.abort(); state.items = []; state.selectedItem = null;
       if ($('action-dialog').open) $('action-dialog').close();
       if ($('item-dialog').open) $('item-dialog').close();
+      syncVibrationDialog();
       state.dialog = null;
       if (message) { text('login-status', message); $('login-status').classList.add('error'); }
       $('login-submit').disabled = false;
@@ -381,7 +383,30 @@
       row.querySelector('.muted').textContent = numeric(event.trigger_count) + ' triggers';
       badge(row.querySelector('.badge'), event.cleared_at ? 'completed' : 'uncertain', event.cleared_at ? 'Cleared' : 'Active');
     });
+    syncVibrationDialog();
     updateControls();
+  }
+
+  function syncVibrationDialog() {
+    const dialog = $('vibration-dialog'), alert = state.vibration?.active_alert;
+    if (!state.authenticated || !alert) {
+      if (dialog.open) dialog.close();
+      state.dismissedVibrationAlert = null;
+      delete dialog.dataset.alertId;
+      $('vibration-dialog-error').hidden = true;
+      return;
+    }
+    if (dialog.dataset.alertId !== alert.id) {
+      dialog.dataset.alertId = alert.id;
+      $('vibration-dialog-error').hidden = true;
+    }
+    text('vibration-dialog-time', vibrationTime(alert.triggered_at));
+    if (!dialog.open && state.dismissedVibrationAlert !== alert.id) dialog.showModal();
+  }
+
+  function dismissVibrationDialog() {
+    state.dismissedVibrationAlert = state.vibration?.active_alert?.id || null;
+    $('vibration-dialog').close();
   }
 
   function chart(container, history, key, ceiling) {
@@ -535,8 +560,12 @@
   function updateControls() {
     $('refresh-button').disabled = state.pollBusy || state.mutationBusy;
     $('logout-button').disabled = state.mutationBusy;
-    $('clear-vibration-alert').disabled = !canAct() || !state.vibration?.active_alert;
-    $('clear-vibration-alert').setAttribute('aria-busy', String(state.mutationBusy));
+    for (const id of ['clear-vibration-alert', 'clear-vibration-dialog']) {
+      $(id).disabled = !canAct() || !state.vibration?.active_alert;
+      $(id).setAttribute('aria-busy', String(state.vibrationClearing));
+      text(id, state.vibrationClearing ? 'Clearing…' : 'Clear alert');
+    }
+    $('vibration-dialog-offline').hidden = !state.vibration?.active_alert || fresh();
     $('pending-check').disabled = !state.authenticated || state.mutationBusy || !state.pending;
     $('pending-retry').disabled = !canAct() || !state.pending;
     $('previous-page').disabled = state.itemBusy || state.offset <= 0;
@@ -649,23 +678,35 @@
     catch (error) { toast("Unable to confirm sign-out: " + error.message); }
     finally { state.mutationBusy = false; updateControls(); }
   });
-  $('clear-vibration-alert').addEventListener('click', async () => {
+  async function clearVibrationAlert() {
     const alert = state.vibration?.active_alert;
     if (!canAct() || !alert) return;
     state.overviewRevision += 1;
-    state.mutationBusy = true; const epoch = state.epoch; updateControls();
-    text('clear-vibration-alert', 'Clearing…');
+    state.mutationBusy = true; state.vibrationClearing = true;
+    const epoch = state.epoch; updateControls();
+    $('vibration-dialog-error').hidden = true;
     try {
       const result = await api('/api/admin/vibration/clear', { method: 'POST', body: { alert_id: alert.id } });
       if (epoch !== state.epoch) return;
       if (!result.vibration || result.vibration.active_alert?.id === alert.id) throw new Error('Unable to confirm the alert was cleared.');
       renderVibration(result.vibration); toast('Alert cleared.');
-    } catch (error) { if (epoch === state.epoch) toast(error.message); }
+    } catch (error) {
+      if (epoch === state.epoch) {
+        text('vibration-dialog-error', error.message);
+        $('vibration-dialog-error').hidden = false;
+        toast(error.message);
+      }
+    }
     finally {
-      state.mutationBusy = false; text('clear-vibration-alert', 'Clear alert'); updateControls();
+      state.mutationBusy = false; state.vibrationClearing = false; updateControls();
       if (epoch === state.epoch && state.authenticated) refreshDashboard();
     }
-  });
+  }
+  $('clear-vibration-alert').addEventListener('click', clearVibrationAlert);
+  $('clear-vibration-dialog').addEventListener('click', clearVibrationAlert);
+  $('dismiss-vibration-dialog').addEventListener('click', dismissVibrationDialog);
+  $('vibration-dialog').addEventListener('cancel', (event) => { event.preventDefault(); dismissVibrationDialog(); });
+  $('view-vibration-alert').addEventListener('click', () => { state.dismissedVibrationAlert = null; syncVibrationDialog(); });
   $('refresh-button').addEventListener('click', () => { state.inventoryFingerprint = ''; refreshDashboard(); });
   $('pending-check').addEventListener('click', async () => { $('pending-check').disabled = true; await recoverPending(); refreshDashboard(); updateControls(); });
   $('pending-retry').addEventListener('click', () => performAction({ type: 'retry' }));
