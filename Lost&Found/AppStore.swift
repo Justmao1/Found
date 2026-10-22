@@ -357,6 +357,8 @@ final class AppStore {
                status.compartments.first(where: { $0.id == operation.compartmentID })?.door?.enabled == true {
                 doorFeedbackRequired = true
             }
+            await reconcileCompletedLockerRequest(server: server, sequence: sequence)
+            guard revision == server, sequence == lockerRefreshSequence, !Task.isCancelled else { return }
             guard status.enabled else { return }
             do {
                 let available = try await api.items(availableOnly: true).items
@@ -371,6 +373,31 @@ final class AppStore {
             guard revision == server, sequence == lockerRefreshSequence, !Task.isCancelled else { return }
             // Never advertise stale free slots while the locker API is unreachable.
             lockerStatus = nil; storedItems = []
+        }
+    }
+
+    /// A request completed elsewhere must not keep the next visitor locked out.
+    /// Confirm its exact identity with a GET; absence from the active list is not proof of completion.
+    private func reconcileCompletedLockerRequest(server: Int, sequence: Int) async {
+        guard !isLockerBusy, lockerNeedsStaff, let command = pendingLocker,
+              command.serverAddress == serverAddress else { return }
+        let visitor = visitorRevision
+        do {
+            let response = try await client.lockerOperation(id: command.request.requestID)
+            guard revision == server, visitorRevision == visitor, sequence == lockerRefreshSequence,
+                  !Task.isCancelled, !isLockerBusy, lockerNeedsStaff,
+                  pendingLocker?.request.requestID == command.request.requestID else { return }
+            try validateLockerResponse(response, expected: command.request)
+            guard response.operation.state == "completed" else { return }
+            pendingLocker = nil
+            do { try persistLockerCommand() }
+            catch { pendingLocker = command; return }
+            lockerNeedsStaff = false
+            lockerOperation = nil; lockerItem = nil; lockerError = nil
+            invalidateDoorReading()
+            doorFeedbackRequired = false
+        } catch {
+            // An unfinished, missing or unreachable request still needs explicit recovery.
         }
     }
 

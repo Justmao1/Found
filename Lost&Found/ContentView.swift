@@ -87,6 +87,7 @@ struct ContentView: View {
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
                 guard !Task.isCancelled else { return }
                 if store.hasPendingItems { await store.refresh() }
+                else if store.selectedTab == .home { await store.refreshLockers() }
             }
         }
         .task(id: "\(scenePhase)-\(store.isDoorMonitoringActive)-\(store.revision)-\(store.visitorRevision)-\(store.lockerOperation?.id ?? "")-\(store.lockerOperation?.state ?? "")-\(store.requiresDoorFeedback)") {

@@ -1029,6 +1029,106 @@ final class LockerStoreTests: XCTestCase {
         XCTAssertTrue(harness.store.lockerNeedsStaff)
     }
 
+    func testAvailabilityRefreshClearsCompletedHeldRequestAndRestoresRegistration() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let operation = try await beginDoorRetrieval(harness, door: LockerDoor(enabled: true, state: .open))
+        XCTAssertTrue(harness.store.endVisitorSession())
+        let restored = harness.relaunch()
+        XCTAssertFalse(restored.beginVisitorTask(.report))
+        let command = LockerOperationRequest(requestID: operation.id, itemID: operation.itemID, kind: operation.kind)
+        let completed = response(for: command, state: "completed")
+        let available = status()
+        let paths = LockedValue<[String]>([])
+        harness.respond { request in
+            XCTAssertEqual(request.httpMethod, "GET", "Reconciliation must never open or confirm a compartment")
+            paths.modify { $0.append(request.url!.path) }
+            if request.url!.path == "/api/lockers" { return .json(body: try JSONEncoder().encode(available)) }
+            if request.url!.path.hasPrefix("/api/locker-operations/") { return .json(body: try JSONEncoder().encode(completed)) }
+            return .json(body: try JSONEncoder().encode(ItemListResponse(items: [], total: 0)))
+        }
+
+        await restored.refreshLockers()
+
+        XCTAssertEqual(paths.value.filter { $0.hasPrefix("/api/locker-operations/") }, ["/api/locker-operations/\(operation.id)"])
+        XCTAssertFalse(restored.hasPendingLocker)
+        XCTAssertFalse(restored.lockerNeedsStaff)
+        XCTAssertFalse(harness.relaunch().hasPendingLocker, "The obsolete journal must be removed durably")
+        XCTAssertNil(restored.lockerOperation, "Previous visitor details must not appear on the public screen")
+        XCTAssertNil(restored.lockerItem)
+        XCTAssertTrue(restored.beginVisitorTask(.report))
+    }
+
+    func testAvailabilityRefreshRetainsUnfinishedMissingOrUnreachableRequest() async throws {
+        for mode in ["unfinished", "missing", "offline", "mismatched"] {
+            let harness = StoreHarness()
+            defer { harness.close() }
+            let operation = try await beginDoorRetrieval(harness, door: LockerDoor(enabled: true, state: .closed))
+            XCTAssertTrue(harness.store.endVisitorSession())
+            let available = status() // An empty active list alone is never enough to clear a local request.
+            let command = LockerOperationRequest(requestID: mode == "mismatched" ? UUID().uuidString.lowercased() : operation.id,
+                                                 itemID: operation.itemID, kind: operation.kind)
+            let reply = response(for: command, state: mode == "unfinished" ? "awaiting_confirmation" : "completed")
+            harness.respond { request in
+                XCTAssertEqual(request.httpMethod, "GET")
+                if request.url!.path == "/api/lockers" { return .json(body: try JSONEncoder().encode(available)) }
+                if request.url!.path.hasPrefix("/api/locker-operations/") {
+                    if mode == "missing" { return .json(status: 404, body: Data("{\"error\":\"Not found\"}".utf8)) }
+                    if mode == "offline" { return .failure(URLError(.notConnectedToInternet)) }
+                    return .json(body: try JSONEncoder().encode(reply))
+                }
+                return .json(body: try JSONEncoder().encode(ItemListResponse(items: [], total: 0)))
+            }
+
+            await harness.store.refreshLockers()
+
+            XCTAssertTrue(harness.store.hasPendingLocker, mode)
+            XCTAssertTrue(harness.store.lockerNeedsStaff, mode)
+            XCTAssertTrue(harness.relaunch().hasPendingLocker, mode)
+            XCTAssertNil(harness.store.lockerOperation, mode)
+            XCTAssertFalse(harness.store.beginVisitorTask(.report), mode)
+        }
+    }
+
+    func testCompletedRequestReconciliationRejectsCancelledOrPreviousVisitResponse() async throws {
+        for cancel in [false, true] {
+            let harness = StoreHarness()
+            defer { harness.close() }
+            let operation = try await beginDoorRetrieval(harness, door: LockerDoor(enabled: true, state: .closed))
+            XCTAssertTrue(harness.store.endVisitorSession())
+            let available = status()
+            let command = LockerOperationRequest(requestID: operation.id, itemID: operation.itemID, kind: operation.kind)
+            let completed = response(for: command, state: "completed")
+            let started = expectation(description: "Held request lookup started")
+            let pending = LockedValue<StubURLProtocol?>(nil)
+            harness.handle { transport in
+                if transport.request.url!.path == "/api/lockers" {
+                    transport.complete(.json(body: try! JSONEncoder().encode(available)))
+                } else if transport.request.url!.path.hasPrefix("/api/locker-operations/") {
+                    pending.modify { $0 = transport }; started.fulfill()
+                } else {
+                    transport.complete(.json(body: try! JSONEncoder().encode(ItemListResponse(items: [], total: 0))))
+                }
+            }
+            let refresh = Task { await harness.store.refreshLockers() }
+            await fulfillment(of: [started], timeout: 3)
+            XCTAssertFalse(harness.store.isLockerBusy)
+            if cancel { refresh.cancel() }
+            else {
+                XCTAssertTrue(harness.store.beginVisitorTask(.find))
+                harness.store.recordVisitorActivity(at: Date().addingTimeInterval(-151))
+                try XCTUnwrap(pending.value).complete(.json(body: JSONEncoder().encode(completed)))
+            }
+            await refresh.value
+            XCTAssertTrue(harness.store.hasPendingLocker)
+            XCTAssertTrue(harness.store.lockerNeedsStaff)
+            if !cancel {
+                harness.store.checkVisitorInactivity()
+                XCTAssertEqual(harness.store.selectedTab, .home, "Background reconciliation must not renew visitor activity")
+            }
+        }
+    }
+
     func testDefinitiveRejectionDoesNotLeaveAnUnrecoverablePendingRequest() async throws {
         let harness = StoreHarness()
         defer { harness.close() }
