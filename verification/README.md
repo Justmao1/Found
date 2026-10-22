@@ -1,4 +1,6 @@
-# Verification · 2026-10-20
+# Verification history · 2026-10-20–22
+
+Current status: [verification matrix](../docs/technical/05-verification-roadmap.md). Entries below retain their original test scope; later entries supersede earlier feature/deployment limitations.
 
 Environment: Xcode 26.3 (17C529), iOS 26.3 simulator; app minimum deployment target iOS 17. No external package dependencies.
 
@@ -151,3 +153,16 @@ This entry supersedes earlier photo-only flow descriptions. A stored item now re
 - Raspberry Pi deployment completed with source/database backup, preserving all 12 old records, certificates and AI configuration. Trusted-CA HTTPS reads report GPIO driver enabled, four free compartments, zero operations, zero stored items and database integrity OK. All four GPIO outputs were initialized LOW with pull-down; no HIGH pulse was sent. Details and backup location are in `lost-found-box/VERIFICATION.md`.
 - Removed the temporary preview app, stopped its loopback server, and restored the production app on the iPad simulator. No real inventory was mutated during visual verification.
 - Remaining physical acceptance: camera/voice/cloud → real four-door operation, actual opening/reclosing, correct compartment wiring, and visitor placement/collection. Legacy records remain unassigned and available to staff; they do not appear as collectible locker contents. The backend still relies on the trusted LAN; local Staff authentication is not server authorization. Photo drafts remain process-only; locker commands use an atomic protected file journal.
+
+
+## Two door inputs and registration recovery · 2026-10-22
+
+Feature revisions: `2372432` (01 feedback), `f15c630` (completed-request reconciliation), `6875a0b` (02 feedback), `e722f21` (unfinished-step resume). This entry summarizes the recorded verification from those changes; the documentation update did not rerun the application or touch real inventory.
+
+- First feedback change: **44 Swift Core tests**, **56 native tests**, **193 Python tests** and **12 HTTP workflow checks** passed. Signed iPad build, install and launch succeeded. The user confirmed the real iPad changes between open and closed as the 01 latch moves.
+- Second feedback change: **196 Python tests** and **13 Swift/Python HTTP workflow checks** passed, with exactly ten simulated opening commands. Independent GPIO12 and GPIO18 debounce/error coverage verifies that closing 01 cannot complete a transfer in 02. The user then confirmed 02 status changes correctly in the interface. Slots 03–04 retain manual confirmation.
+- Latest native regression run at 21:24: **62 tests passed, zero failures**. Coverage includes explicit GET-only resume, clearing a completed stale journal, retaining missing/offline/uncertain requests, canceling stale responses and checking fresh closed feedback. The signed `AUT.Lost-Found` build was installed and launched on the paired physical iPad Pro (11-inch, fourth generation).
+- Latest simulator flow used an isolated fixture: enabled Home entry → continue unfinished 02 → open feedback blocks confirmation → closed feedback enables confirmation → explicit completion → Finish → new Report photo screen. The request audit contains exactly one POST, to `/complete`; there was no opening POST. The resume page does not expose the previous photo or note.
+- Local evidence directories: `door-feedback/`, `two-door-feedback/`, `report-button-recurrence/`. Device logs, inventory snapshots and screenshots remain ignored; this tracked summary is the portable verification record.
+- Backend source and both inputs were deployed; public/admin feedback agreed. User-confirmed latch transitions are narrower than full real-camera/AI/physical-deposit/collection acceptance. No real opening commands or inventory mutations were issued by this verification.
+- The admin web surface now has password/session authentication; legacy visitor APIs still rely on the trusted LAN. Earlier “no backend authentication” statements describe the older deployment, not the current `/api/admin/` surface.

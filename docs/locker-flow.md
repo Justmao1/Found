@@ -1,8 +1,8 @@
 # Four-compartment station contract
 
-> Current implementation and verification index: [technical documentation](technical/README.md). Backend and Swift code now exist, with isolated workflow checks recorded on 2026-10-22. This contract does not establish live deployment or physical acceptance.
+> Current implementation and verification index: [technical documentation](technical/README.md). This contract reflects feature revision `e722f21`, including two latch inputs and explicit visitor resume. Deployment and physical checks are recorded separately in the [verification matrix](technical/05-verification-roadmap.md).
 
-Implementation plan, 2026-10-22. The station is a shared iPad with a Raspberry Pi backend. One item occupies one compartment. Visitors explicitly confirm physical completion; a relay pulse does not prove a door opened or an item moved.
+Implementation contract, 2026-10-22. The station is a shared iPad with a Raspberry Pi backend. One item occupies one compartment. Visitors explicitly confirm physical completion; a relay pulse does not prove a door opened or an item moved.
 
 ## Hardware
 
