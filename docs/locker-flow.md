@@ -17,7 +17,7 @@ User-confirmed BCM output mapping: 01 = 17, 02 = 26, 03 = 13, 04 = 5. All channe
 5. The owner selects a match, confirms ownership, then starts one retrieval operation. The slot remains occupied while the door is used.
 6. “I've taken my item and closed the door” atomically marks the item collected and frees the slot, again requiring fresh closed feedback when configured. Completed items are excluded from search. Closing a door alone never marks an item collected or frees a slot.
 
-App backgrounding, timeout, request loss and server restart never free a slot or automatically send another pulse. Pending command identity is saved before transmission; uncertain operations are recoverable from the server. Staff can reconcile an interrupted operation only after an explicit physical check. Old session callbacks must not start a new visitor's operation.
+App backgrounding, timeout, request loss and server restart never free a slot or automatically send another pulse. Pending command identity is saved before transmission; uncertain operations are recoverable from the server. An explicit tap on the home Report tile can resume a validated awaiting-confirmation operation using only GET; it retains the original request, reads door feedback and still requires item confirmation. The resume page shows the compartment step without the previous visitor’s photo or note. Completed operations clear their stale local record automatically; missing/failed/uncertain operations remain recoverable and are never replayed automatically. Staff can reconcile uncertain outcomes only after an explicit physical check. Old session callbacks must not start a new visitor's operation.
 
 ## HTTP contract
 

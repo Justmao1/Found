@@ -655,6 +655,13 @@ private final class StoreHarness {
 
     func relaunch() -> AppStore { AppStore(defaults: defaults, session: session, lockerJournalURL: journal) }
 
+    func seedPendingLocker(_ command: LockerOperationRequest) throws {
+        let request = try JSONSerialization.jsonObject(with: JSONEncoder().encode(command))
+        let data = try JSONSerialization.data(withJSONObject: ["serverAddress": store.serverAddress, "request": request])
+        try FileManager.default.createDirectory(at: journal.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: journal)
+    }
+
     func blockLockerJournal() throws {
         // A file where the journal directory belongs simulates unavailable durable storage.
         try Data([0]).write(to: journal.deletingLastPathComponent())
@@ -1057,6 +1064,89 @@ final class LockerStoreTests: XCTestCase {
         XCTAssertNil(restored.lockerOperation, "Previous visitor details must not appear on the public screen")
         XCTAssertNil(restored.lockerItem)
         XCTAssertTrue(restored.beginVisitorTask(.report))
+    }
+
+    func testExplicitResumeRestoresDepositAndDoorGateWithoutOpeningAgain() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        let command = LockerOperationRequest(itemID: itemID, kind: "deposit")
+        try harness.seedPendingLocker(command)
+        let restored = harness.relaunch()
+        let open = response(for: command, door: LockerDoor(enabled: true, gpio: 18, pin: 12, state: .open, level: 1))
+        let requests = LockedValue<[URLRequest]>([])
+        harness.respond { request in
+            requests.modify { $0.append(request) }
+            return .json(body: try JSONEncoder().encode(open))
+        }
+        XCTAssertTrue(restored.lockerNeedsStaff)
+        XCTAssertTrue(restored.canResumeLockerVisit)
+
+        await restored.resumeLockerVisit()
+
+        XCTAssertEqual(restored.selectedTab, .locker)
+        XCTAssertFalse(restored.lockerNeedsStaff)
+        XCTAssertEqual(restored.lockerOperation?.id, command.requestID)
+        XCTAssertTrue(restored.hasPendingLocker)
+        XCTAssertNil(restored.photoData, "Resuming must not require the previous camera draft")
+        restored.setDoorMonitoringActive(true)
+        await restored.refreshLockerDoor()
+        let operation = try XCTUnwrap(restored.lockerOperation)
+        XCTAssertEqual(restored.doorFeedbackState(for: operation), .open)
+        XCTAssertFalse(restored.canCompleteLockerOperation(operation))
+        await restored.completeLockerOperation()
+        XCTAssertEqual(requests.value.count, 2)
+        XCTAssertTrue(requests.value.allSatisfy { $0.httpMethod == "GET" && $0.url!.path == "/api/locker-operations/\(command.requestID)" })
+
+        let closed = response(for: command, door: LockerDoor(enabled: true, gpio: 18, pin: 12, state: .closed, level: 0))
+        harness.respond { _ in .json(body: try JSONEncoder().encode(closed)) }
+        await restored.refreshLockerDoor()
+        XCTAssertTrue(restored.canCompleteLockerOperation(operation))
+        XCTAssertTrue(restored.endVisitorSession())
+        XCTAssertTrue(restored.canResumeLockerVisit, "Returning home must keep an actionable route back")
+    }
+
+    func testExplicitResumeKeepsUnknownMissingAndFailedOperationsHeld() async throws {
+        for mode in ["uncertain", "actuating", "missing", "offline", "mismatched"] {
+            let harness = StoreHarness()
+            defer { harness.close() }
+            let command = LockerOperationRequest(itemID: itemID, kind: "deposit")
+            try harness.seedPendingLocker(command)
+            let restored = harness.relaunch()
+            let reply = response(for: mode == "mismatched" ? LockerOperationRequest(itemID: itemID, kind: "deposit") : command,
+                                 state: mode == "actuating" ? "actuating" : mode == "uncertain" ? "uncertain" : "awaiting_confirmation")
+            harness.respond { request in
+                XCTAssertEqual(request.httpMethod, "GET")
+                if mode == "missing" { return .json(status: 404, body: Data("{\"error\":\"Not found\"}".utf8)) }
+                if mode == "offline" { return .failure(URLError(.notConnectedToInternet)) }
+                return .json(body: try JSONEncoder().encode(reply))
+            }
+            await restored.resumeLockerVisit()
+            XCTAssertEqual(restored.selectedTab, .locker)
+            XCTAssertTrue(restored.hasPendingLocker, mode)
+            XCTAssertTrue(restored.lockerNeedsStaff, mode)
+            XCTAssertTrue(harness.relaunch().hasPendingLocker, mode)
+            if let operation = restored.lockerOperation { XCTAssertFalse(restored.canCompleteLockerOperation(operation), mode) }
+            else { XCTAssertNotNil(restored.lockerError, mode) }
+        }
+    }
+
+    func testCancelledResumePreservesJournalAndCanBeRetried() async throws {
+        let harness = StoreHarness()
+        defer { harness.close() }
+        try harness.seedPendingLocker(LockerOperationRequest(itemID: itemID, kind: "deposit"))
+        let restored = harness.relaunch()
+        let started = expectation(description: "Resume read started")
+        harness.handle { _ in started.fulfill() }
+        let task = Task { await restored.resumeLockerVisit() }
+        await fulfillment(of: [started], timeout: 3)
+        XCTAssertTrue(restored.isLockerBusy)
+        task.cancel()
+        await task.value
+        XCTAssertFalse(restored.isLockerBusy)
+        XCTAssertTrue(restored.hasPendingLocker)
+        XCTAssertTrue(restored.lockerNeedsStaff)
+        XCTAssertTrue(restored.canResumeLockerVisit)
+        XCTAssertNil(restored.lockerOperation)
     }
 
     func testAvailabilityRefreshRetainsUnfinishedMissingOrUnreachableRequest() async throws {

@@ -4,7 +4,7 @@ import Observation
 @MainActor
 @Observable
 final class AppStore {
-    enum Tab: Hashable { case home, report, find, items, settings }
+    enum Tab: Hashable { case home, report, find, items, settings, locker }
     enum DoorFeedbackState: Equatable { case manual, checking, open, closed, unavailable }
     var selectedTab: Tab = .home
     private(set) var visitorRevision = 0
@@ -79,6 +79,9 @@ final class AppStore {
         items.contains { ["pending", "processing"].contains($0.recognitionStatus) }
     }
     var hasPendingLocker: Bool { pendingLocker != nil }
+    var canResumeLockerVisit: Bool {
+        pendingLocker?.serverAddress == serverAddress && !isSaving && !isLockerBusy
+    }
     var availableItems: [FoundItem] { lockerStatus?.enabled == false ? items : storedItems }
     var requiresDoorFeedback: Bool {
         guard let operation = lockerOperation else { return false }
@@ -473,6 +476,38 @@ final class AppStore {
             lockerError = error.localizedDescription
         }
         await refreshLockers()
+    }
+
+    /// An explicit visitor action resumes only the remaining physical step.
+    /// Keep the existing request identity and never replay the opening command.
+    func resumeLockerVisit() async {
+        guard canResumeLockerVisit, let command = pendingLocker, !Task.isCancelled,
+              endVisitorSession() else { return }
+        selectedTab = .locker
+        recordVisitorActivity()
+        let server = revision
+        let visitor = visitorRevision
+        isLockerBusy = true
+        defer { isLockerBusy = false }
+        do {
+            let response = try await client.lockerOperation(id: command.request.requestID)
+            guard revision == server, visitorRevision == visitor, !Task.isCancelled,
+                  pendingLocker?.request.requestID == command.request.requestID else { return }
+            try validateLockerResponse(response, expected: command.request)
+            try applyLockerResponse(response, expected: command.request)
+            if response.operation.state == "awaiting_confirmation" {
+                lockerNeedsStaff = false
+            } else if response.operation.state == "completed" {
+                // Nothing remains to confirm; continue the requested registration.
+                lockerOperation = nil; lockerItem = nil
+                selectedTab = !reportNeedsStaff && submission == nil &&
+                    lockerStatus?.enabled == true && lockerStatus?.compartments.contains { $0.state == "free" } == true
+                    ? .report : .home
+            }
+        } catch {
+            guard revision == server, visitorRevision == visitor, !Task.isCancelled else { return }
+            lockerError = error.localizedDescription
+        }
     }
 
     /// Poll the current visit only. This never submits a command or renews visitor activity.

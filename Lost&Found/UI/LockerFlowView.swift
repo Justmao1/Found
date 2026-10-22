@@ -218,6 +218,39 @@ struct LockerOperationAction: View {
     }
 }
 
+/// Explicitly resume a persisted step without replaying an opening command.
+struct LockerResumeView: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        Page {
+            VStack(spacing: 24) {
+                Text("Finish the compartment step")
+                    .font(.largeTitle.weight(.semibold)).multilineTextAlignment(.center)
+                Text("Complete this step before registering another item.")
+                    .font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                if store.isLockerBusy && store.lockerOperation == nil {
+                    ProgressView("Checking the compartment…").padding(32)
+                } else if let operation = store.lockerOperation {
+                    LockerOperationPanel(operation: operation, showsActions: !store.lockerNeedsStaff)
+                    if operation.state == "actuating" {
+                        Button("Check again", systemImage: "arrow.clockwise") {
+                            Task { await store.resumeLockerVisit() }
+                        }.buttonStyle(.bordered).disabled(store.isLockerBusy)
+                    }
+                } else {
+                    Notice(text: store.lockerError ?? "The station could not check this compartment yet.", isError: true)
+                    PrimaryAction(title: "Check again", symbol: "arrow.clockwise", busy: store.isLockerBusy) {
+                        Task { await store.resumeLockerVisit() }
+                    }
+                }
+            }.frame(maxWidth: 720).frame(maxWidth: .infinity)
+        }
+        .navigationTitle("Your compartment").navigationBarTitleDisplayMode(.inline)
+        .modifier(VisitorNavigation())
+    }
+}
+
 /// A current visit can finish its physical step even after returning from item details.
 struct LockerVisitRecoveryView: View {
     @Environment(AppStore.self) private var store

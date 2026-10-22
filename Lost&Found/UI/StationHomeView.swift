@@ -26,8 +26,8 @@ struct StationHomeView: View {
                             .accessibilityIdentifier("stationNeedsStaff")
                     }
                     if store.lockerNeedsStaff {
-                        Notice(text: "A compartment request needs staff assistance. Please ask staff to check it before starting another storage or collection request.",
-                               symbol: "person.crop.circle.badge.exclamationmark")
+                        Notice(text: "A compartment step is unfinished. Tap “I found something” to continue before registering another item.",
+                               symbol: "arrow.uturn.forward")
                     }
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: "hand.raised.fill").foregroundStyle(FoundStyle.accent).accessibilityHidden(true)
@@ -83,16 +83,20 @@ struct StationHomeView: View {
 
     private func taskButton(title: String, detail: String, action: String, tab: AppStore.Tab) -> some View {
         let tint = tab == .report ? FoundStyle.accent : FoundStyle.searchAccent
-        return Button { _ = store.beginVisitorTask(tab) } label: {
+        let resume = tab == .report && store.hasPendingLocker
+        return Button {
+            if resume { Task { await store.resumeLockerVisit() } }
+            else { _ = store.beginVisitorTask(tab) }
+        } label: {
             VStack(alignment: .leading, spacing: 16) {
                 StationTaskArtwork(isReport: tab == .report).frame(height: 128)
                     .frame(maxWidth: .infinity).padding(.bottom, 6)
                 Text(title).font(.title2.bold()).foregroundStyle(.primary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(detail).font(.body).foregroundStyle(.secondary)
+                Text(resume ? "Finish the compartment step, then register another item." : detail).font(.body).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 12) {
-                    Text(action).font(.headline)
+                    Text(resume ? "Continue compartment step" : action).font(.headline)
                     Spacer(minLength: 0)
                     Image(systemName: "arrow.up.right")
                         .font(.body.weight(.semibold)).frame(width: 42, height: 42)
@@ -111,8 +115,9 @@ struct StationHomeView: View {
             .contentShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
         }
         .buttonStyle(StationPressStyle())
-        .disabled(store.isLockerBusy || (tab == .report && (store.reportNeedsStaff || store.lockerNeedsStaff ||
-            (store.lockerStatus.map { !$0.enabled || !$0.compartments.contains { $0.state == "free" } } ?? true))))
+        .disabled(store.isLockerBusy || store.isSaving || (tab == .report &&
+            (resume ? !store.canResumeLockerVisit : store.reportNeedsStaff || store.lockerNeedsStaff ||
+             (store.lockerStatus.map { !$0.enabled || !$0.compartments.contains { $0.state == "free" } } ?? true))))
         .accessibilityIdentifier(tab == .report ? "startReport" : "startFind")
     }
 }

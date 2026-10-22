@@ -18,6 +18,8 @@ struct ContentView: View {
                 FindView()
             case .items:
                 ItemsView()
+            case .locker:
+                LockerResumeView()
             }
         }
         .stationEntrance()
