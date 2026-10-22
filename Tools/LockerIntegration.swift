@@ -41,8 +41,10 @@ struct LockerIntegration {
         first.compartmentID == second.compartmentID && first.state == second.state && first.error == second.error
     }
 
-    private static func setDoor(_ state: String, at control: URL) throws {
-        try JSONEncoder().encode(["state": state]).write(to: control, options: .atomic)
+    private static func setDoor(_ state: String, compartment: String = "01", at control: URL) throws {
+        var states = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: control))
+        states[compartment] = state
+        try JSONEncoder().encode(states).write(to: control, options: .atomic)
     }
 
     private static func run() async throws {
@@ -70,8 +72,10 @@ struct LockerIntegration {
         try require(initial.compartments.allSatisfy { $0.state == "free" && $0.itemID == nil }, "Slots must start empty")
         try require(initial.compartments[0].door?.state == .open && initial.compartments[0].door?.gpio == 12,
                     "Compartment 01 must expose real-format feedback on GPIO12")
-        try require(initial.compartments.dropFirst().allSatisfy { $0.door?.enabled == false },
+        try require(initial.compartments.dropFirst(2).allSatisfy { $0.door?.enabled == false },
                     "Unwired compartments must not claim door feedback")
+        try require(initial.compartments[1].door?.state == .open && initial.compartments[1].door?.gpio == 18 &&
+                    initial.compartments[1].door?.pin == 12, "Compartment 02 must expose independent GPIO18 feedback")
         let initialAvailable = try await client.items(availableOnly: true)
         let initialSearch = try await client.search(query: "蓝色钥匙扣")
         try require(initialAvailable.total == 0 && initialSearch.searchedCount == 0, "Unstored legacy items leaked into public inventory")
@@ -130,11 +134,17 @@ struct LockerIntegration {
         try setDoor("closed", at: doorControl)
         print("PASS door/deposit: 01 open rejects completion; closed feedback is required; unwired slots stay manual")
 
+        try await expectConflict { _ = try await client.completeLockerOperation(id: deposits[1].requestID) }
         for (index, request) in deposits.enumerated() {
+            if index == 1 {
+                try await expectConflict { _ = try await client.completeLockerOperation(id: request.requestID) }
+                try setDoor("closed", compartment: "02", at: doorControl)
+                print("PASS second door: closing 01 cannot confirm 02; GPIO18 independently gates its transfer")
+            }
             let result = try await client.completeLockerOperation(id: request.requestID)
-            if index == 0 {
+            if index < 2 {
                 try require(result.operation.door?.state == .closed, "Closed feedback was not decoded")
-                try setDoor("open", at: doorControl)
+                try setDoor("open", compartment: index == 0 ? "01" : "02", at: doorControl)
             }
             let repeatCompletion = try await client.completeLockerOperation(id: request.requestID)
             try require(result.operation.state == "completed" && result.item.isStored, "Deposit confirmation failed")
@@ -217,6 +227,6 @@ struct LockerIntegration {
         let finalPulses = try pulseCount(audit)
         try require(finalPulses == 10, "Expected exactly ten explicit starts; resolution/replay must not pulse")
         print("PASS reconciliation: explicit stored/collected/empty outcomes keep item and slot states consistent")
-        print("RESULT: 12 real HTTP workflow checks passed; exactly 10 simulated opening commands")
+        print("RESULT: 13 real HTTP workflow checks passed; exactly 10 simulated opening commands")
     }
 }

@@ -1,8 +1,10 @@
-# Compartment 01 door feedback
+# Compartment 01 and 02 door feedback
 
 The user confirmed that the lock connected to **BCM GPIO12, physical pin32**, belongs to compartment **01**. Its isolated dry-contact feedback is wired between GPIO12 and GND. The live input test observed both levels and a stable LOW after the user reported the latch closed. LOW is therefore configured as closed. This is latch feedback, not an item-presence detector.
 
-The server continuously reads GPIO12 with an internal pull-up and 250ms stable debounce. A transition, stale sample or read failure cannot be presented as a confirmed closed door. Only compartment01 has a configured sensor;02–04 keep their existing manual confirmation. Existing opening outputs17/26/13/5 and vibration input21 are separate.
+Compartment **02** uses **BCM GPIO18, physical pin12**, with the same dry-contact connection to GND and LOW-closed interpretation.
+
+The server continuously reads both contacts with internal pull-ups and independent 250ms stable debounce. A transition, stale sample or read failure cannot be presented as a confirmed closed door. Compartments 01 and 02 have configured sensors; 03–04 keep their existing manual confirmation. Each input has independent timing and error state, so movement or failure on one contact cannot change the other door status. Existing opening outputs17/26/13/5 and vibration input21 are separate.
 
 Set `LOST_FOUND_DOOR_FEEDBACK_ENABLED=1` in the station's `config/lockers.env` and restart its user service. The default is0 for local development. Automated checks use injected fake inputs, never physical locks.
 

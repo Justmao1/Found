@@ -75,7 +75,8 @@ class DoorFeedbackHTTPTests(unittest.TestCase):
         self.assertEqual(admin["lockers"]["compartments"][0]["door_state"], "open")
         self.assertTrue(admin["capabilities"]["door_sensor"])
         self.assertTrue(admin["capabilities"]["physical_feedback"])
-        for slot in admin["lockers"]["compartments"][1:]:
+        self.assertEqual(admin["lockers"]["compartments"][1]["door"], self.monitor.snapshot("02"))
+        for slot in admin["lockers"]["compartments"][2:]:
             self.assertEqual(slot["door"], door_feedback.not_configured())
         self.assertEqual(self.driver.pulses, ["01"])
 
@@ -131,15 +132,49 @@ class DoorFeedbackHTTPTests(unittest.TestCase):
         self.assertEqual(self.get("/api/lockers")[2]["compartments"][0]["door"]["state"], "unavailable")
         self.assertEqual(self.driver.pulses, ["01"])
 
-    def test_other_three_compartments_retain_manual_confirmation(self):
+    def test_compartments_without_contacts_retain_manual_confirmation(self):
         self.start()  # Keep 01 reserved with its door open.
-        for compartment in ("02", "03", "04"):
+        self.start()  # Keep 02 reserved with its independent door open.
+        for compartment in ("03", "04"):
             body = self.start()
             operation = body["operation"]
             self.assertEqual(operation["compartment_id"], compartment)
             self.assertEqual(operation["door"], door_feedback.not_configured())
             self.assertEqual(self.complete(operation)[0], 200)
         self.assertEqual(self.driver.pulses, ["01", "02", "03", "04"])
+
+    def test_second_door_gates_its_own_deposit_and_collection(self):
+        first = self.start()
+        second = self.start()
+        operation = second["operation"]
+        self.assertEqual((operation["compartment_id"], operation["door"]["gpio"], operation["door"]["pin"]), ("02", 18, 12))
+        self.gpio.levels[12] = 0
+        self.sample(1)
+        self.sample(1, .25)
+        self.assertEqual(self.monitor.snapshot("01")["state"], "closed")
+        before = self.state_rows()
+        self.assertEqual(self.complete(operation)[0], 409, "Closing 01 cannot complete 02")
+        self.assertEqual(self.state_rows(), before)
+        self.gpio.levels = {12: 1, 18: 0}
+        self.sample(1)
+        self.sample(1, .25)
+        self.assertEqual(self.complete(operation)[0], 200, "02 can finish while 01 remains open")
+        self.assertEqual(self.complete(first["operation"])[0], 409)
+        collection = self.start(second["item"]["id"], "retrieve")
+        self.gpio.levels[18] = 1
+        self.sample(1)
+        self.sample(1, .25)
+        before = self.state_rows()
+        self.assertEqual(self.complete(collection["operation"])[0], 409)
+        self.assertEqual(self.state_rows(), before)
+        self.gpio.levels[18] = 0
+        self.sample(1)
+        self.sample(1, .25)
+        status, _, completed = self.complete(collection["operation"])
+        self.assertEqual(status, 200)
+        self.assertEqual(completed["item"]["status"], "collected")
+        self.assertEqual(self.get("/api/lockers")[2]["compartments"][1]["state"], "free")
+        self.assertEqual(self.driver.pulses, ["01", "02", "02"])
 
     def test_staff_resolution_remains_available_when_feedback_fails(self):
         self.login()

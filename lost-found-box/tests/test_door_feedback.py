@@ -19,6 +19,9 @@ class FakeGPIO:
 
     def __init__(self, level=0):
         self.level = level
+        self.levels = {}
+        self.failed_pins = set()
+        self.claim_failures = set()
         self.calls = []
         self.failure = None
         self.closed = False
@@ -34,11 +37,15 @@ class FakeGPIO:
 
     def gpio_claim_input(self, handle, gpio, lFlags=0):
         self._call("claim_input", handle, gpio, lFlags)
+        if gpio in self.claim_failures:
+            raise RuntimeError("private claim fixture")
         return 0
 
     def gpio_read(self, handle, gpio):
         self._call("read", handle, gpio)
-        return self.level
+        if gpio in self.failed_pins:
+            raise RuntimeError("private input fixture")
+        return self.levels.get(gpio, self.level)
 
     def gpiochip_close(self, handle):
         self._call("close", handle)
@@ -72,9 +79,48 @@ class DoorFeedbackTests(unittest.TestCase):
             monitor.close()
             importing.assert_not_called()
         self.start()
-        for compartment in ("02", "03", "04"):
+        for compartment in ("03", "04"):
             self.assertEqual(self.monitor.snapshot(compartment), door_feedback.not_configured())
-        self.assertEqual(self.gpio.calls[:3], [("open", 0), ("claim_input", 0, 12, 32), ("read", 0, 12)])
+        self.assertEqual(self.gpio.calls, [("open", 0), ("claim_input", 0, 12, 32),
+                                         ("claim_input", 0, 18, 32), ("read", 0, 12), ("read", 0, 18)])
+
+    def test_second_contact_debounces_independently_of_first(self):
+        self.gpio.levels = {12: 0, 18: 1}
+        self.start()
+        self.sample(0, .25)
+        self.assertEqual(self.monitor.snapshot("01")["state"], "closed")
+        second = self.monitor.snapshot("02")
+        self.assertEqual((second["state"], second["gpio"], second["pin"]), ("open", 18, 12))
+        self.gpio.levels[18] = 0
+        self.sample(0, .01)
+        self.assertEqual(self.monitor.snapshot("02")["state"], "unknown")
+        self.assertEqual(self.monitor.snapshot("01")["state"], "closed")
+        self.sample(0, .25)
+        self.assertEqual(self.monitor.snapshot("02")["state"], "closed")
+        self.gpio.levels[12] = 1
+        self.sample(0)
+        self.assertEqual(self.monitor.snapshot("01")["state"], "unknown")
+        self.assertEqual(self.monitor.snapshot("02")["state"], "closed")
+
+    def test_one_input_failure_does_not_disable_other_contact(self):
+        for stage in ("claim", "read"):
+            with self.subTest(stage=stage):
+                gpio = FakeGPIO()
+                if stage == "claim": gpio.claim_failures.add(18)
+                else: gpio.failed_pins.add(18)
+                monitor = door_feedback.DoorFeedbackMonitor(enabled=True, api=gpio,
+                    clock=self.clock, wall_clock=self.clock.wall)
+                try:
+                    with patch.object(threading.Thread, "start"): monitor.start()
+                    self.clock.advance(.25)
+                    monitor._sample()
+                    self.assertEqual(monitor.snapshot("01")["state"], "closed")
+                    self.assertEqual(monitor.snapshot("02")["state"], "unavailable")
+                    self.assertIn("GPIO18", monitor.snapshot("02")["error"])
+                    self.assertFalse(gpio.closed)
+                finally:
+                    monitor.close()
+                self.assertTrue(gpio.closed)
 
     def test_debounce_waits_for_stable_level_and_never_keeps_closed_during_transition(self):
         self.start()
@@ -210,6 +256,7 @@ class DoorServerLifecycleTests(unittest.TestCase):
             self.assertTrue(instance.door_feedback.enabled)
             self.assertIs(instance.lockers.door_monitor, instance.door_feedback)
             self.assertEqual(instance.lockers.door_snapshot("01")["gpio"], 12)
+            self.assertEqual(instance.lockers.door_snapshot("02")["gpio"], 18)
         finally:
             instance.server_close()
         self.assertTrue(self.gpio.closed)

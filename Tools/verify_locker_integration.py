@@ -37,7 +37,7 @@ def serve_fixture(directory):
     import server as backend
 
     door_control = directory / "door-state.json"
-    door_control.write_text(json.dumps({"state": "open"}), encoding="utf-8")
+    door_control.write_text(json.dumps({"01": "open", "02": "open"}), encoding="utf-8")
 
     class FixtureDoorMonitor:
         enabled = True
@@ -49,10 +49,10 @@ def serve_fixture(directory):
             pass
 
         def snapshot(self, compartment):
-            configured = compartment == "01"
-            state = json.loads(door_control.read_text())["state"] if configured else "not_configured"
-            return {"enabled": configured, "gpio": 12 if configured else None,
-                    "pin": 32 if configured else None, "state": state,
+            configured = compartment in ("01", "02")
+            state = json.loads(door_control.read_text())[compartment] if configured else "not_configured"
+            return {"enabled": configured, "gpio": {"01": 12, "02": 18}.get(compartment),
+                    "pin": {"01": 32, "02": 12}.get(compartment), "state": state,
                     "level": (0 if state == "closed" else 1) if configured else None,
                     "updated_at": time.time() if configured else None, "error": None}
 

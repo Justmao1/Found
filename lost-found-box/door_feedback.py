@@ -1,12 +1,12 @@
-"""Read the compartment 01 dry-contact input without driving any GPIO output."""
+"""Read the compartment 01 and 02 dry-contact inputs without driving any GPIO output."""
 
+from dataclasses import dataclass
 import importlib
 import threading
 import time
 
 
-GPIO = 12
-PHYSICAL_PIN = 32
+INPUTS = {"01": (12, 32), "02": (18, 12)}
 POLL_SECONDS = 0.05
 DEBOUNCE_SECONDS = 0.25
 STALE_SECONDS = 1.0
@@ -15,6 +15,18 @@ STALE_SECONDS = 1.0
 def not_configured():
     return {"enabled": False, "gpio": None, "pin": None, "state": "not_configured",
             "level": None, "updated_at": None, "error": None}
+
+
+@dataclass
+class DoorInput:
+    gpio: int
+    pin: int
+    level: int | None = None
+    candidate_since: float | None = None
+    last_sample: float | None = None
+    updated_at: float | None = None
+    stable: bool = False
+    error: str | None = None
 
 
 class DoorFeedbackMonitor:
@@ -30,12 +42,7 @@ class DoorFeedbackMonitor:
         self._handle = None
         self._started = False
         self._closed = False
-        self._level = None
-        self._candidate_since = None
-        self._last_sample = None
-        self._updated_at = None
-        self._stable = False
-        self._error = None
+        self._inputs = {slot: DoorInput(*pins) for slot, pins in INPUTS.items()}
 
     def start(self):
         if self._started or self._closed or not self.enabled:
@@ -45,8 +52,15 @@ class DoorFeedbackMonitor:
             if self._api is None:
                 self._api = importlib.import_module("lgpio")
             self._handle = self._api.gpiochip_open(0)
-            self._api.gpio_claim_input(self._handle, GPIO, lFlags=self._api.SET_PULL_UP)
+            for slot, sensor in self._inputs.items():
+                try:
+                    self._api.gpio_claim_input(self._handle, sensor.gpio, lFlags=self._api.SET_PULL_UP)
+                except Exception:
+                    self._fail(slot)
             self._sample()
+            if self._stop.is_set():
+                self._release_gpio()
+                return
             self._thread = threading.Thread(target=self._run, name="door-feedback", daemon=True)
             self._thread.start()
         except Exception:
@@ -54,22 +68,28 @@ class DoorFeedbackMonitor:
             self._release_gpio()
 
     def _sample(self):
-        level = self._api.gpio_read(self._handle, GPIO)
-        if level not in (0, 1):
-            raise RuntimeError("Invalid door input level")
-        now = self._clock()
-        with self._lock:
-            # A transition or a gap in sampling invalidates the previous closed
-            # state immediately; only uninterrupted stable samples confirm it.
-            if (level != self._level or self._last_sample is None
-                    or now - self._last_sample >= STALE_SECONDS):
-                self._candidate_since = now
-                self._stable = False
-            self._level = level
-            self._last_sample = now
-            self._updated_at = self._wall_clock()
-            if now - self._candidate_since >= DEBOUNCE_SECONDS - 1e-9:
-                self._stable = True
+        for slot, sensor in self._inputs.items():
+            if sensor.error:
+                continue
+            try:
+                level = self._api.gpio_read(self._handle, sensor.gpio)
+                if level not in (0, 1):
+                    raise RuntimeError("Invalid door input level")
+                now = self._clock()
+                with self._lock:
+                    # Each contact debounces independently; a transition must
+                    # immediately invalidate only that contact's closed state.
+                    if (level != sensor.level or sensor.last_sample is None
+                            or now - sensor.last_sample >= STALE_SECONDS):
+                        sensor.candidate_since = now
+                        sensor.stable = False
+                    sensor.level = level
+                    sensor.last_sample = now
+                    sensor.updated_at = self._wall_clock()
+                    if now - sensor.candidate_since >= DEBOUNCE_SECONDS - 1e-9:
+                        sensor.stable = True
+            except Exception:
+                self._fail(slot)
 
     def _run(self):
         try:
@@ -80,26 +100,30 @@ class DoorFeedbackMonitor:
         finally:
             self._release_gpio()
 
-    def _fail(self):
+    def _fail(self, compartment=None):
         with self._lock:
-            self._error = "Door sensor unavailable. Check compartment 01 and GPIO12."
-            self._level = None
-            self._stable = False
-        self._stop.set()
+            for slot, sensor in self._inputs.items():
+                if compartment is None or slot == compartment:
+                    sensor.error = f"Door sensor unavailable. Check compartment {slot} and GPIO{sensor.gpio}."
+                    sensor.level = None
+                    sensor.stable = False
+            if all(sensor.error for sensor in self._inputs.values()):
+                self._stop.set()
 
     def snapshot(self, compartment):
-        if not self.enabled or compartment != "01":
+        if not self.enabled or compartment not in self._inputs:
             return not_configured()
         with self._lock:
-            stale = self._last_sample is not None and self._clock() - self._last_sample >= STALE_SECONDS
-            error = self._error
+            sensor = self._inputs[compartment]
+            stale = sensor.last_sample is not None and self._clock() - sensor.last_sample >= STALE_SECONDS
+            error = sensor.error
             if self._closed or stale:
                 error = "Door sensor data is unavailable. Wait for monitoring to resume."
-            state = ("unavailable" if error else "unknown" if not self._stable
-                     else "closed" if self._level == 0 else "open")
-            return {"enabled": True, "gpio": GPIO, "pin": PHYSICAL_PIN,
-                    "state": state, "level": None if error else self._level,
-                    "updated_at": self._updated_at, "error": error}
+            state = ("unavailable" if error else "unknown" if not sensor.stable
+                     else "closed" if sensor.level == 0 else "open")
+            return {"enabled": True, "gpio": sensor.gpio, "pin": sensor.pin,
+                    "state": state, "level": None if error else sensor.level,
+                    "updated_at": sensor.updated_at, "error": error}
 
     def _release_gpio(self):
         with self._resources:
@@ -118,5 +142,6 @@ class DoorFeedbackMonitor:
         self._release_gpio()
         with self._lock:
             self._closed = True
-            self._stable = False
-            self._level = None
+            for sensor in self._inputs.values():
+                sensor.stable = False
+                sensor.level = None
