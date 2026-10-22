@@ -502,10 +502,10 @@ class PhotoHandler(BaseHTTPRequestHandler):
             self._send(200, {"authenticated": False}, headers={"Set-Cookie": admin.sessions.cookie("", secure)})
             return
         if path == "/api/admin/manual-open":
-            if set(payload) != {"request_id", "compartment_id", "reason"}:
-                raise vision.VisionError(400, "Provide the request ID, compartment ID and reason for opening.")
+            if set(payload) not in ({"request_id", "compartment_id"}, {"request_id", "compartment_id", "reason"}):
+                raise vision.VisionError(400, "Provide the request ID and compartment ID.")
             operation, duplicate = self.server.lockers.manual_open(
-                payload["request_id"], payload["compartment_id"], payload["reason"])
+                payload["request_id"], payload["compartment_id"], payload.get("reason", ""))
             self._send(200 if duplicate else 201, {"operation": operation, "duplicate": duplicate})
             return
         parts = path[len("/api/admin/"):].split("/")

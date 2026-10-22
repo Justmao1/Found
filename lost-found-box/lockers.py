@@ -1,7 +1,7 @@
 """Durable four-compartment workflows; hardware is disabled unless explicitly enabled.
 
-A committed actuation is never replayed. A relay command cannot prove that a door
-opened or an item moved, so physical completion always needs confirmation.
+A committed actuation is never replayed. Visitor item transfers need confirmation;
+manual commands leave inventory unchanged and complete when the pulse finishes.
 """
 
 from contextlib import ExitStack, contextmanager
@@ -421,13 +421,13 @@ class LockerStore:
         finally:
             db.close()
 
-    def manual_open(self, request_id, compartment_id, reason):
+    def manual_open(self, request_id, compartment_id, reason=""):
         canonical_uuid(request_id)
         if not isinstance(compartment_id, str) or compartment_id not in GPIO_MAP:
             raise vision.VisionError(400, "Choose compartment 01, 02, 03 or 04.")
-        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 200:
-            raise vision.VisionError(400, "Describe the reason in 1 to 200 characters.")
-        reason = reason.strip()
+        if not isinstance(reason, str) or len(reason.strip()) > 200:
+            raise vision.VisionError(400, "The reason must be text of up to 200 characters.")
+        reason = reason.strip() or "Manual opening"
         try:
             reason.encode("utf-8")
         except UnicodeError:
@@ -488,7 +488,9 @@ class LockerStore:
                 try:
                     self._issue_pulse(compartment_id)
                     with db:
-                        db.execute("UPDATE manual_openings SET state='awaiting_confirmation' WHERE id=?", (request_id,))
+                        db.execute("BEGIN IMMEDIATE")
+                        row = db.execute("SELECT * FROM manual_openings WHERE id=?", (request_id,)).fetchone()
+                        self._restore_manual(db, row)
                 except Exception:
                     with db:
                         self._manual_uncertain(db, request_id)
@@ -517,13 +519,33 @@ class LockerStore:
         finally:
             db.close()
 
+    @staticmethod
+    def _restore_manual(db, row):
+        # Caller owns the hardware lock and a write transaction. Completing the
+        # command restores software availability without inferring item movement
+        # or a measured door position.
+        slot = db.execute("SELECT * FROM compartments WHERE id=?", (row["compartment_id"],)).fetchone()
+        storage = db.execute("SELECT * FROM item_storage WHERE item_id=?", (row["item_id"],)).fetchone()
+        visitor = db.execute("SELECT * FROM locker_operations WHERE compartment_id=? AND state!='completed'",
+                             (row["compartment_id"],)).fetchone()
+        valid_storage = (storage is None and row["item_id"] is None) or (
+            storage is not None and storage["status"] == row["previous_item_status"] and
+            storage["compartment_id"] == row["previous_item_compartment_id"])
+        valid_visitor = (visitor is None and row["previous_operation_id"] is None) or (
+            visitor is not None and visitor["id"] == row["previous_operation_id"] and
+            visitor["state"] == row["previous_operation_state"] and visitor["item_id"] == row["item_id"])
+        if (slot is None or slot["state"] != "maintenance" or slot["item_id"] != row["item_id"] or
+                not valid_storage or not valid_visitor):
+            raise vision.VisionError(409, "Compartment or item state changed. Check it before restoring availability.")
+        db.execute("UPDATE compartments SET state=? WHERE id=?", (row["previous_slot_state"], row["compartment_id"]))
+        db.execute("UPDATE manual_openings SET state='completed',error=NULL WHERE id=?", (row["id"],))
+
     def manual_confirm(self, identifier):
         canonical_uuid(identifier)
-        # Hold the same cross-process lock throughout confirmation. Returning a
-        # conflict while busy avoids acknowledging a door during any live pulse.
+        # Recovery for interrupted commands and older pending confirmations.
         with self._try_hardware_lock() as acquired:
             if not acquired:
-                raise vision.VisionError(409, "An opening command is in progress. Wait before confirming the door is closed.")
+                raise vision.VisionError(409, "An opening command is in progress. Try again when it finishes.")
             self._recover_abandoned_locked()
             db = self.connect()
             try:
@@ -536,23 +558,7 @@ class LockerStore:
                         return manual_operation_json(row)
                     if row["state"] not in ("awaiting_confirmation", "uncertain"):
                         raise vision.VisionError(409, "Wait for the opening command before checking the compartment.")
-                    slot = db.execute("SELECT * FROM compartments WHERE id=?", (row["compartment_id"],)).fetchone()
-                    storage = db.execute("SELECT * FROM item_storage WHERE item_id=?", (row["item_id"],)).fetchone()
-                    visitor = db.execute("SELECT * FROM locker_operations WHERE compartment_id=? AND state!='completed'",
-                                         (row["compartment_id"],)).fetchone()
-                    valid_storage = (storage is None and row["item_id"] is None) or (
-                        storage is not None and storage["status"] == row["previous_item_status"] and
-                        storage["compartment_id"] == row["previous_item_compartment_id"])
-                    valid_visitor = (visitor is None and row["previous_operation_id"] is None) or (
-                        visitor is not None and visitor["id"] == row["previous_operation_id"] and
-                        visitor["state"] == row["previous_operation_state"] and visitor["item_id"] == row["item_id"])
-                    if (slot is None or slot["state"] != "maintenance" or slot["item_id"] != row["item_id"] or
-                            not valid_storage or not valid_visitor):
-                        raise vision.VisionError(409, "Compartment or item state changed. Inspect it before restoring availability.")
-                    # Contents were explicitly checked unchanged: restore the
-                    # prior slot state, never infer collected or finish a visitor.
-                    db.execute("UPDATE compartments SET state=? WHERE id=?", (row["previous_slot_state"], row["compartment_id"]))
-                    db.execute("UPDATE manual_openings SET state='completed',error=NULL WHERE id=?", (identifier,))
+                    self._restore_manual(db, row)
                     return manual_operation_json(db.execute("SELECT * FROM manual_openings WHERE id=?", (identifier,)).fetchone())
             finally:
                 db.close()

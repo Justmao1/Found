@@ -9,7 +9,7 @@
   const LABELS = {
     free: "Available", reserved: "Awaiting deposit", occupied: "Occupied", retrieving: "Collection in progress", recovery: "Needs inspection",
     maintenance: "Maintenance", stored: "Stored", collected: "Collected", recorded: "Recorded",
-    deposit_pending: "Awaiting deposit", retrieval_pending: "Awaiting collection", actuating: "Opening request in progress",
+    deposit_pending: "Awaiting deposit", retrieval_pending: "Awaiting collection", actuating: "Opening…",
     awaiting_confirmation: "Awaiting confirmation", uncertain: "Outcome unknown", completed: "Completed"
   };
   const state = {
@@ -157,10 +157,10 @@
       const raw = localStorage.getItem(JOURNAL_KEY);
       if (!raw) return null;
       const request = JSON.parse(raw);
-      if (!UUID.test(request.request_id) || !SLOT_IDS.has(request.compartment_id) || typeof request.reason !== 'string' || !request.reason.trim() || request.reason.length > 200) {
-        throw new Error("The saved opening request could not be read. Keep the browser data and ask staff to check it before attempting another opening.");
+      if (!UUID.test(request.request_id) || !SLOT_IDS.has(request.compartment_id) || (request.reason !== undefined && (typeof request.reason !== 'string' || request.reason.length > 200))) {
+        throw new Error("Unable to read the pending request.");
       }
-      return Object.freeze({ request_id: request.request_id, compartment_id: request.compartment_id, reason: request.reason });
+      return Object.freeze({ request_id: request.request_id, compartment_id: request.compartment_id, ...(request.reason !== undefined ? { reason: request.reason } : {}) });
     } catch (error) {
       state.journalError = error.message || "The browser could not read the saved request.";
       return null;
@@ -168,10 +168,10 @@
   }
   function saveJournal(payload) {
     const existing = localStorage.getItem(JOURNAL_KEY);
-    if (existing) throw new Error("An opening request still needs checking. Resolve it first.");
+    if (existing) throw new Error("Check the pending request first.");
     const encoded = JSON.stringify(payload);
     localStorage.setItem(JOURNAL_KEY, encoded);
-    if (localStorage.getItem(JOURNAL_KEY) !== encoded) throw new Error("The opening request could not be saved reliably. Nothing was sent.");
+    if (localStorage.getItem(JOURNAL_KEY) !== encoded) throw new Error("Unable to save this request. Please try again.");
     state.pending = Object.freeze({ ...payload });
     state.pendingOperation = null; state.pendingMessage = "Request saved. Sending now.";
     renderJournal();
@@ -187,8 +187,8 @@
     renderJournal();
   }
   function validManual(operation, expected) {
-    if (!operation || !UUID.test(operation.id) || !SLOT_IDS.has(operation.compartment_id) || !OP_STATES.has(operation.state)) throw new Error("The opening response is incomplete. Check the original request instead of creating another.");
-    if (expected && (operation.id !== expected.request_id || operation.compartment_id !== expected.compartment_id)) throw new Error("The opening response does not match the request. Ask staff to inspect it.");
+    if (!operation || !UUID.test(operation.id) || !SLOT_IDS.has(operation.compartment_id) || !OP_STATES.has(operation.state)) throw new Error("Response incomplete. Check request status.");
+    if (expected && (operation.id !== expected.request_id || operation.compartment_id !== expected.compartment_id)) throw new Error("Unexpected response. Check request status.");
     return operation;
   }
   function observeManual(operation) {
@@ -199,11 +199,11 @@
     renderJournal();
   }
   function renderJournal() {
-    const visible = state.pending || state.journalError;
+    const visible = !state.mutationBusy && (state.pending || state.journalError);
     $('pending-journal').hidden = !visible;
     if (!visible) return;
-    text('pending-description', state.pending ? "Compartment " + state.pending.compartment_id + ' · ' + state.pending.reason : state.journalError);
-    text('pending-status', state.pendingMessage || "Refreshing or signing in only checks status. It never opens the compartment again automatically.");
+    text('pending-description', state.pending ? "Compartment " + state.pending.compartment_id : state.journalError);
+    text('pending-status', state.pendingMessage || "Checking request status…");
     $('pending-check').hidden = !state.pending;
     $('pending-retry').hidden = !state.pending || !!state.pendingOperation;
     updateControls();
@@ -218,7 +218,7 @@
       observeManual(validManual(result.operation, request));
     } catch (error) {
       if (epoch !== state.epoch) return;
-      state.pendingMessage = error.status === 404 ? "The server has no record of this request yet. Check the compartment before retrying the same request." : error.message;
+      state.pendingMessage = error.status === 404 ? "Request not received. Tap Retry to send it." : error.message;
       renderJournal();
     }
   }
@@ -275,7 +275,7 @@
     } catch (error) {
       if (epoch === state.epoch) {
         state.online = false;
-        text('connection-notice', "Connection lost. Showing the last received data. Opening and state changes are paused. " + error.message);
+        text('connection-notice', "Connection lost. " + error.message);
         $('connection-notice').hidden = false;
       }
     } finally {
@@ -291,7 +291,7 @@
     document.querySelector('.station-dot').classList.toggle('online', !!current);
     if (current) $('connection-notice').hidden = true;
     else if (state.overview && state.online) {
-      text('connection-notice', "Fresh data has not arrived. Opening and state changes are paused until the connection recovers.");
+      text('connection-notice', "Reconnecting to the station…");
       $('connection-notice').hidden = false;
     }
     updateControls();
@@ -337,6 +337,7 @@
     if (state.pending) {
       const observed = (data.manual_operations || []).find((op) => op.id === state.pending.request_id);
       if (observed) observeManual(observed);
+      else if (!state.mutationBusy) recoverPending();
     }
     const activity = Array.isArray(data.activity) ? data.activity : [];
     keyed($('activity-list'), activity, (entry) => entry.type + '-' + entry.id, createActivity, updateActivity);
@@ -371,8 +372,9 @@
   function createSlot(slot) {
     const card = element('article', 'slot-card');
     const head = element('div', 'slot-head'); head.append(element('strong', 'slot-number'), element('span', 'badge'));
-    const facts = element('div', 'slot-facts'); facts.append(element('span', 'slot-gpio'), element('span', 'slot-level'), element('span', '', "Door: unknown (no sensor)"));
-    const open = button("Open manually", 'open-slot', { slot: slot.id, control: 'open' }); open.prepend(icon('door'));
+    const facts = element('div', 'slot-facts'); facts.append(element('span', 'slot-gpio'), element('span', 'slot-level'));
+    const open = button("", 'open-slot', { slot: slot.id, control: 'open' }); open.append(icon('door'), element('span', 'slot-open-label', 'Open'));
+    open.setAttribute('aria-label', 'Open compartment ' + slot.id);
     card.append(head, element('div', 'slot-visual'), element('h3', 'slot-title'), element('p', 'slot-subtitle'), facts, open, element('p', 'slot-detail'));
     return card;
   }
@@ -381,12 +383,12 @@
     card.querySelector('.slot-number').textContent = slot.id;
     badge(card.querySelector('.badge'), slot.state);
     photo(card.querySelector('.slot-visual'), slot.item);
-    card.querySelector('.slot-title').textContent = slot.item ? title(slot.item) : slot.state === 'free' ? "Ready for an item" : "Physical check needed";
-    card.querySelector('.slot-subtitle').textContent = slot.item ? (slot.item.recognition?.tags || []).slice(1, 3).join(' · ') || "No additional tags" : slot.state === 'free' ? "Available for a new item" : "Resolve the pending operation first";
+    card.querySelector('.slot-title').textContent = slot.item ? title(slot.item) : slot.state === 'free' ? "Ready for an item" : "Pending operation";
+    card.querySelector('.slot-subtitle').textContent = slot.item ? (slot.item.recognition?.tags || []).slice(1, 3).join(' · ') || "No additional tags" : slot.state === 'free' ? "Available for a new item" : "See pending actions below";
     card.querySelector('.slot-gpio').textContent = 'GPIO ' + numeric(slot.gpio) + " · Physical pin " + numeric(slot.pin);
     card.querySelector('.slot-level').textContent = "GPIO level: " + (slot.output_level === 1 ? "High" : slot.output_level === 0 ? "Low" : "Not available");
     const remaining = slot.cooldown_remaining_seconds;
-    card.querySelector('.slot-detail').textContent = finite(remaining) && remaining > 0 ? "Cooldown: " + Math.ceil(remaining) + " s remaining" : slot.state === 'maintenance' ? "Confirm unchanged contents after inspection" : '';
+    card.querySelector('.slot-detail').textContent = finite(remaining) && remaining > 0 ? "Cooldown: " + Math.ceil(remaining) + " s remaining" : slot.state === 'maintenance' ? "Opening needs attention" : '';
   }
   function createRecovery(op) {
     const row = element('div', 'recovery-row');
@@ -394,17 +396,17 @@
     const heading = element('div', 'recovery-title'); heading.append(element('span'), element('span', 'badge'));
     info.append(heading, element('p'));
     const actions = element('div', 'recovery-actions');
-    if (op.recoveryKind === 'manual') actions.append(button("Door closed, contents unchanged", 'confirm-manual', { id: op.id, control: 'manual-confirm' }));
+    if (op.recoveryKind === 'manual') actions.append(button("Finish", 'confirm-manual', { id: op.id, control: 'manual-confirm' }));
     else {
-      actions.append(button(op.kind === 'deposit' ? "Confirm item stored" : "Confirm item collected", 'resolve-visitor', { id: op.id, outcome: op.kind === 'deposit' ? 'stored' : 'collected', control: 'resolve' }));
-      actions.append(button(op.kind === 'deposit' ? "Confirm compartment empty" : "Confirm item still inside", 'resolve-visitor', { id: op.id, outcome: op.kind === 'deposit' ? 'empty' : 'stored', control: 'resolve' }));
+      actions.append(button(op.kind === 'deposit' ? "Item stored" : "Item collected", 'resolve-visitor', { id: op.id, outcome: op.kind === 'deposit' ? 'stored' : 'collected', control: 'resolve' }));
+      actions.append(button(op.kind === 'deposit' ? "Empty compartment" : "Item still inside", 'resolve-visitor', { id: op.id, outcome: op.kind === 'deposit' ? 'empty' : 'stored', control: 'resolve' }));
     }
     row.append(info, actions); return row;
   }
   function updateRecovery(row, op) {
     row.querySelector('.recovery-title>span').textContent = "Compartment " + op.compartment_id + ' · ' + (op.recoveryKind === 'manual' ? "Open manually" : op.kind === 'deposit' ? "Deposit" : "Collection");
     badge(row.querySelector('.badge'), op.state);
-    row.querySelector('.recovery-info>p').textContent = op.error || op.reason || (op.state === 'actuating' ? "The opening request is still in progress. Wait for an update." : "Inspect the item and door, then select the matching outcome.");
+    row.querySelector('.recovery-info>p').textContent = op.error || (op.recoveryKind === 'manual' ? "Finish to keep the current item record." : '') || (op.state === 'actuating' ? "Opening…" : "Select the current item status.");
   }
   function createActivity() {
     const row = element('div', 'activity-row');
@@ -488,8 +490,7 @@
   function openAllowed(slot) {
     return canAct() && !!state.overview?.lockers?.enabled && !!slot && SLOT_IDS.has(slot.id) &&
       !state.pending && !state.journalError && slot.state !== 'maintenance' && !slotActuating(slot.id) &&
-      !(finite(slot.cooldown_remaining_seconds) && slot.cooldown_remaining_seconds > 0) &&
-      !(state.overview?.manual_operations || []).some((op) => op.state !== 'completed');
+      !(finite(slot.cooldown_remaining_seconds) && slot.cooldown_remaining_seconds > 0);
   }
   function updateControls() {
     $('refresh-button').disabled = state.pollBusy || state.mutationBusy;
@@ -502,7 +503,12 @@
     text('retry-recognition', recognitionStatus === 'complete' ? "Tags ready" : ['pending', 'processing'].includes(recognitionStatus) ? "Identifying…" : "Retry recognition");
     $('retry-recognition').disabled = !canAct() || !state.selectedItem || !['incomplete', 'failed', 'disabled'].includes(recognitionStatus);
     document.querySelectorAll('[data-control]').forEach((control) => {
-      if (control.dataset.control === 'open') control.disabled = !openAllowed(currentSlot(control.dataset.slot));
+      if (control.dataset.control === 'open') {
+        control.disabled = !openAllowed(currentSlot(control.dataset.slot));
+        const opening = state.mutationBusy && state.pending?.compartment_id === control.dataset.slot;
+        control.querySelector('.slot-open-label').textContent = opening ? 'Opening…' : 'Open';
+        control.setAttribute('aria-busy', String(opening));
+      }
       else if (control.dataset.control === 'manual-confirm') {
         const op = currentManual(control.dataset.id); control.disabled = !canAct() || !op || !['awaiting_confirmation', 'uncertain'].includes(op.state);
       } else {
@@ -511,62 +517,22 @@
       }
     });
     if ($('action-dialog').open) {
-      const dialog = state.dialog;
-      let allowed = canAct();
-      if (dialog?.type === 'open') allowed = openAllowed(currentSlot(dialog.slot));
-      if (dialog?.type === 'retry') allowed = canAct() && state.pending?.request_id === dialog.request.request_id;
-      if (dialog?.type === 'manual-confirm') allowed = canAct() && ['awaiting_confirmation', 'uncertain'].includes(currentManual(dialog.id)?.state);
-      if (dialog?.type === 'resolve') allowed = canAct() && currentVisitor(dialog.id)?.state !== 'actuating' && currentSlot(dialog.slot)?.state !== 'maintenance';
-      $('dialog-submit').disabled = !allowed;
+      const action = state.dialog;
+      $('dialog-submit').disabled = !canAct() || !action || currentVisitor(action.id)?.state === 'actuating' || currentSlot(action.slot)?.state === 'maintenance';
       $('dialog-submit').setAttribute('aria-busy', String(state.mutationBusy));
       $('dialog-cancel').disabled = state.mutationBusy;
       $('action-dialog').querySelector('[data-close-dialog]').disabled = state.mutationBusy;
-      $('open-reason').disabled = state.mutationBusy;
-      $('physical-confirmed').disabled = state.mutationBusy;
     }
   }
-  function requestDetails(values) {
-    const list = element('dl', 'request-detail');
-    values.forEach(([name, value]) => { list.append(element('dt', '', name), element('dd', '', String(value))); });
-    return list;
-  }
-  function showAction(config) {
-    if (!canAct()) { toast("Wait for fresh station data before continuing."); return; }
-    state.dialog = config;
-    text('dialog-title', config.title); text('dialog-description', config.description); text('dialog-submit', config.submit);
-    $('dialog-icon').replaceChildren(icon(config.type === 'open' || config.type === 'retry' ? 'door' : 'check'));
-    $('dialog-content').replaceChildren(...(config.details ? [requestDetails(config.details)] : []));
-    $('reason-field').hidden = config.type !== 'open'; $('open-reason').value = ''; $('open-reason').required = config.type === 'open';
-    $('physical-check').hidden = !config.check; $('physical-confirmed').checked = false; $('physical-confirmed').required = !!config.check;
-    text('physical-check-label', config.check || ''); $('dialog-error').hidden = true;
-    $('action-dialog').showModal(); updateControls();
-    if (config.type === 'open') $('open-reason').focus();
-  }
-  function showOpen(slot) {
-    if (!openAllowed(slot)) { toast("This compartment cannot be opened now. Check the connection, cooldown and pending operations."); return; }
-    showAction({ type: 'open', slot: slot.id, title: "Open compartment " + slot.id, submit: "Confirm opening",
-      description: "This sends one opening pulse and reserves the compartment for inspection. It does not mark the item as collected. After inspection, confirm that the door is closed and the contents are unchanged.",
-      details: [["Current item", slot.item ? title(slot.item) : "No linked item"], ["Recorded state", label(slot.state)], ["Door state", "Unknown · No sensor; check in person"]] });
-  }
-  function showManualConfirmation(op) {
-    if (!op) return;
-    showAction({ type: 'manual-confirm', id: op.id, slot: op.compartment_id, title: "Finish inspecting compartment " + op.compartment_id, submit: "Confirm unchanged contents",
-      description: "This restores the recorded state from before the manual opening. Any unfinished visitor operation must still be resolved separately. It does not mark an item as collected.",
-      details: [["Reason for opening", op.reason || "Not available"]], check: "I have checked that the door is closed and the original contents are unchanged." });
-  }
   function showResolution(op, outcome) {
-    if (!op) return;
-    const wording = outcome === 'stored' ? "the item is inside and the door is closed" : outcome === 'collected' ? "the item has been removed and the door is closed" : "the compartment is empty and the door is closed";
-    showAction({ type: 'resolve', id: op.id, slot: op.compartment_id, outcome, title: "Inspect compartment " + op.compartment_id,
-      submit: outcome === 'stored' ? "Confirm stored" : outcome === 'collected' ? "Confirm collected" : "Confirm empty and release",
-      description: "Check the compartment in person first. This updates the storage record without sending an opening pulse. " + (outcome === 'stored' ? "The item will become available for collection." : "The compartment will become available for a new item."),
-      check: "I have checked that " + wording + '.' });
-  }
-  function showRetry() {
-    if (!state.pending) return;
-    showAction({ type: 'retry', request: state.pending, title: "Retry opening compartment " + state.pending.compartment_id, submit: "Retry same request",
-      description: "This uses the original request ID and reason. If the server already recorded it, no new pulse is sent. If it never arrived, retrying may send one opening pulse.",
-      details: [["Original request ID", state.pending.request_id], ["Original reason", state.pending.reason]], check: "I have checked the compartment and confirmed it is safe to continue this request." });
+    if (!op || !canAct()) return;
+    const submit = outcome === 'stored' ? 'Mark as stored' : outcome === 'collected' ? 'Mark as collected' : 'Release compartment';
+    state.dialog = { type: 'resolve', id: op.id, slot: op.compartment_id, outcome, submit };
+    text('dialog-title', 'Compartment ' + op.compartment_id);
+    text('dialog-description', outcome === 'stored' ? 'The item will be available for collection.' : 'The compartment will be available for a new item.');
+    text('dialog-submit', submit);
+    $('dialog-error').hidden = true;
+    $('action-dialog').showModal(); updateControls();
   }
   function newUUID() {
     if (crypto.randomUUID) return crypto.randomUUID();
@@ -574,54 +540,52 @@
     const hex = Array.from(data, (n) => n.toString(16).padStart(2, '0')).join('');
     return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
   }
-  async function performAction(event) {
-    event.preventDefault();
-    const action = state.dialog;
-    if (!action || state.mutationBusy || !canAct() || $('dialog-submit').disabled) return;
-    if (action.check && !$('physical-confirmed').checked) { $('physical-confirmed').reportValidity(); return; }
+  async function performAction(action) {
+    if (!action || !canAct()) return;
     let payload;
     if (action.type === 'open') {
-      const reason = $('open-reason').value.trim();
-      if (!reason) { text('dialog-error', "Enter a reason for opening this compartment."); $('dialog-error').hidden = false; $('open-reason').focus(); return; }
       if (!openAllowed(currentSlot(action.slot))) return;
-      payload = Object.freeze({ request_id: newUUID(), compartment_id: action.slot, reason });
-      try { saveJournal(payload); } catch (error) { text('dialog-error', "Request not sent: " + error.message); $('dialog-error').hidden = false; return; }
+      payload = Object.freeze({ request_id: newUUID(), compartment_id: action.slot });
+      try { saveJournal(payload); } catch (error) { toast(error.message); return; }
     } else if (action.type === 'retry') {
-      if (state.pending?.request_id !== action.request.request_id) { text('dialog-error', "The pending request has changed. Check its status again."); $('dialog-error').hidden = false; return; }
-      payload = action.request;
-    }
+      if (!state.pending || state.pendingOperation) return;
+      payload = state.pending;
+    } else if (action.type === 'manual-confirm') {
+      if (!['awaiting_confirmation', 'uncertain'].includes(currentManual(action.id)?.state)) return;
+    } else if (action.type !== 'resolve' || $('dialog-submit').disabled) return;
     state.mutationBusy = true; const epoch = state.epoch;
-    text('dialog-submit', "Submitting…"); $('dialog-error').hidden = true; updateControls();
+    if (state.dialog) text('dialog-submit', 'Saving…');
+    $('dialog-error').hidden = true; renderJournal(); updateControls();
     try {
       if (payload) {
         const result = await api('/api/admin/manual-open', { method: 'POST', body: payload });
         if (epoch !== state.epoch) return;
         observeManual(validManual(result.operation, payload));
-        state.inventoryFingerprint = '';
-        toast(result.operation.state === 'completed' ? "The original request is already complete. No new opening pulse was sent." : "Opening request recorded. Inspect the compartment, then confirm its contents are unchanged.");
+        toast(result.operation.state === 'completed' ? 'Compartment ' + payload.compartment_id + (result.duplicate ? ' · Request already completed' : ' · Opening command sent') : 'Opening needs attention. See pending actions.');
       } else if (action.type === 'manual-confirm') {
         const result = await api('/api/admin/manual-open/' + safeID(action.id) + '/confirm', { method: 'POST' });
         if (epoch !== state.epoch) return;
         const operation = validManual(result.operation);
-        if (operation.id !== action.id || operation.state !== 'completed') throw new Error("Completion has not been confirmed. Check the operation status.");
-        observeManual(operation); state.inventoryFingerprint = ''; toast("Contents confirmed unchanged. The previous compartment state has been restored.");
+        if (operation.id !== action.id || operation.state !== 'completed') throw new Error('Unable to finish. Check request status.');
+        observeManual(operation); toast('Opening request finished.');
       } else {
         await api('/api/admin/locker-operations/' + safeID(action.id) + '/resolve', { method: 'POST', body: { outcome: action.outcome } });
         if (epoch !== state.epoch) return;
-        state.inventoryFingerprint = ''; toast("Inspection outcome saved.");
+        toast('Item status updated.');
       }
+      state.inventoryFingerprint = '';
       if ($('action-dialog').open) $('action-dialog').close(); state.dialog = null;
     } catch (error) {
       if (epoch !== state.epoch) return;
       if (payload) {
-        state.pendingMessage = error.message + " The original request is saved. Check its status; it will not retry automatically."; renderJournal();
-        if ($('action-dialog').open) $('action-dialog').close(); state.dialog = null;
-        toast("The opening outcome needs checking. Select “Check status”.");
-      } else { text('dialog-error', error.message + " Completion is not confirmed. Check the status before continuing."); $('dialog-error').hidden = false; }
+        state.pendingMessage = error.message;
+        toast('Unable to confirm opening. Check request status.');
+      } else if (state.dialog) { text('dialog-error', error.message); $('dialog-error').hidden = false; }
+      else toast(error.message);
     } finally {
       state.mutationBusy = false;
       if (state.dialog) text('dialog-submit', state.dialog.submit);
-      updateControls();
+      renderJournal(); updateControls();
       if (epoch === state.epoch && state.authenticated) refreshDashboard();
     }
   }
@@ -645,8 +609,8 @@
   });
   $('refresh-button').addEventListener('click', () => { state.inventoryFingerprint = ''; refreshDashboard(); });
   $('pending-check').addEventListener('click', async () => { $('pending-check').disabled = true; await recoverPending(); refreshDashboard(); updateControls(); });
-  $('pending-retry').addEventListener('click', showRetry);
-  $('action-form').addEventListener('submit', performAction);
+  $('pending-retry').addEventListener('click', () => performAction({ type: 'retry' }));
+  $('action-form').addEventListener('submit', (event) => { event.preventDefault(); performAction(state.dialog); });
   $('action-dialog').addEventListener('cancel', (event) => { if (state.mutationBusy) event.preventDefault(); else state.dialog = null; });
   document.querySelectorAll('[data-close-dialog]').forEach((node) => node.addEventListener('click', () => { if (!state.mutationBusy) { $('action-dialog').close(); state.dialog = null; } }));
   document.querySelectorAll('[data-close-item]').forEach((node) => node.addEventListener('click', () => { if (!state.mutationBusy) $('item-dialog').close(); }));
@@ -657,8 +621,8 @@
     if (!control || control.disabled) return;
     try {
       switch (control.dataset.action) {
-        case 'open-slot': showOpen(currentSlot(control.dataset.slot)); break;
-        case 'confirm-manual': showManualConfirmation(currentManual(control.dataset.id)); break;
+        case 'open-slot': performAction({ type: 'open', slot: control.dataset.slot }); break;
+        case 'confirm-manual': performAction({ type: 'manual-confirm', id: control.dataset.id }); break;
         case 'resolve-visitor': showResolution(currentVisitor(control.dataset.id), control.dataset.outcome); break;
         case 'view-item': { const item = state.items.find((entry) => entry.id === control.dataset.id); if (item) showItem(item); break; }
       }
@@ -692,7 +656,7 @@
   window.addEventListener('storage', (event) => {
     if (event.key !== JOURNAL_KEY) return;
     state.pending = readJournal(); state.pendingOperation = null;
-    state.pendingMessage = "The saved request changed in another tab. Check its status first."; renderJournal();
+    state.pendingMessage = "Request updated in another tab."; renderJournal();
     if (state.pending && state.authenticated) recoverPending();
   });
   setInterval(() => { if (!document.hidden) updateFreshness(); }, 1000);

@@ -63,15 +63,15 @@ class ManualLockerTests(unittest.TestCase):
             function(*args)
         self.assertEqual(error.exception.status, code)
 
-    def test_empty_slot_requires_confirmation_and_idempotent_restore(self):
+    def test_empty_slot_completes_without_confirmation_and_replays_idempotently(self):
         operation, duplicate = self.manual_open(reason="  检查锁舌  ")
         self.assertFalse(duplicate)
         self.assertEqual(operation["reason"], "检查锁舌")
-        self.assertEqual(operation["state"], "awaiting_confirmation")
+        self.assertEqual(operation["state"], "completed")
         self.assertIsNone(operation["item_id"])
         self.assertIsInstance(operation["created_at"], float)
-        self.assertEqual(self.slot()["state"], "maintenance")
-        self.assertEqual(self.store.manual_list(), [operation])
+        self.assertEqual(self.slot()["state"], "free")
+        self.assertEqual(self.store.manual_list(), [])
         self.assertEqual(self.store.manual_get(operation["id"]), operation)
         finished = self.store.manual_confirm(operation["id"])
         self.assertEqual(finished["state"], "completed")
@@ -80,26 +80,24 @@ class ManualLockerTests(unittest.TestCase):
         self.assertEqual(self.store.manual_list(), [])
         self.driver.pulse.assert_called_once_with("01")
 
-    def test_occupied_slot_keeps_item_and_rejects_visitor_retrieval_during_maintenance(self):
+    def test_occupied_slot_keeps_item_and_allows_later_visitor_retrieval(self):
         visitor = self.visitor_start()
         self.store.finish(visitor["id"])
         operation, _ = self.manual_open()
+        self.assertEqual(operation["state"], "completed")
         self.assertEqual(operation["item_id"], visitor["item_id"])
-        self.assert_error(409, self.visitor_start, visitor["item_id"], "retrieve")
         self.assert_error(409, self.visitor_start, visitor["item_id"], "deposit")
-        self.store.manual_confirm(operation["id"])
         self.assertEqual(self.slot(), {"id": "01", "state": "occupied", "item_id": visitor["item_id"]})
         db = self.connect()
         self.assertEqual(db.execute("SELECT status FROM item_storage WHERE item_id=?", (visitor["item_id"],)).fetchone()[0], "stored")
         db.close()
+        self.assertEqual(self.visitor_start(visitor["item_id"], "retrieve")["state"], "awaiting_confirmation")
 
-    def test_pending_visitor_operation_survives_manual_reopen_and_cannot_complete_early(self):
+    def test_pending_visitor_operation_survives_manual_reopen_and_can_finish_normally(self):
         visitor = self.visitor_start()
         operation, _ = self.manual_open()
         self.assertEqual(self.store.get(visitor["id"])["state"], "awaiting_confirmation")
-        self.assert_error(409, self.store.finish, visitor["id"])
-        self.assert_error(409, self.store.finish, visitor["id"], "empty")
-        self.store.manual_confirm(operation["id"])
+        self.assertEqual(operation["state"], "completed")
         self.assertEqual(self.slot()["state"], "reserved")
         self.assertEqual(self.store.get(visitor["id"])["state"], "awaiting_confirmation")
         self.assertEqual(self.store.finish(visitor["id"])["state"], "completed")
@@ -110,7 +108,7 @@ class ManualLockerTests(unittest.TestCase):
         self.store.finish(visitor["id"])
         retrieval = self.visitor_start(visitor["item_id"], "retrieve")
         operation, _ = self.manual_open()
-        self.store.manual_confirm(operation["id"])
+        self.assertEqual(operation["state"], "completed")
         self.assertEqual(self.slot()["state"], "retrieving")
         self.assertEqual(self.store.get(retrieval["id"])["state"], "awaiting_confirmation")
         self.store.finish(retrieval["id"])
@@ -118,18 +116,30 @@ class ManualLockerTests(unittest.TestCase):
         failed = self.visitor_start()
         self.driver.pulse.side_effect = None
         operation, _ = self.manual_open()
-        self.store.manual_confirm(operation["id"])
+        self.assertEqual(operation["state"], "completed")
         self.assertEqual(self.slot()["state"], "recovery")
         self.assertEqual(self.store.get(failed["id"])["state"], "uncertain")
 
-    def test_replays_conflicts_and_second_manual_request_never_duplicate_pulse(self):
+    def test_concurrent_replays_and_conflicting_ids_never_duplicate_pulse(self):
         identifier = str(uuid.uuid4())
         with ThreadPoolExecutor(max_workers=5) as pool:
             results = list(pool.map(lambda _: self.manual_open(request_id=identifier), range(5)))
         self.assertEqual(sorted(duplicate for _, duplicate in results), [False, True, True, True, True])
-        self.assert_error(409, self.manual_open, "01", "检查锁舌", str(uuid.uuid4()))
+        self.assertTrue(all(operation["state"] == "completed" for operation, _ in results))
         self.assert_error(409, self.manual_open, "02", "检查锁舌", identifier)
         self.assert_error(409, self.manual_open, "01", "另一原因", identifier)
+        self.driver.pulse.assert_called_once_with("01")
+
+    def test_omitted_and_empty_reasons_share_the_default_and_same_replay(self):
+        identifier = str(uuid.uuid4())
+        operation, duplicate = self.store.manual_open(identifier, "01")
+        self.assertFalse(duplicate)
+        self.assertEqual(operation["reason"], "Manual opening")
+        self.assertEqual(operation["state"], "completed")
+        for reason in ("", "  ", "Manual opening"):
+            replay, duplicate = self.store.manual_open(identifier, "01", reason)
+            self.assertTrue(duplicate)
+            self.assertEqual(replay, operation)
         self.driver.pulse.assert_called_once_with("01")
 
     def test_active_manual_pulse_blocks_confirmation_and_visitor_completion(self):
@@ -142,21 +152,23 @@ class ManualLockerTests(unittest.TestCase):
             self.assert_error(409, self.store.finish, visitor["id"])
         self.driver.pulse.side_effect = during_pulse
         operation, _ = self.manual_open(request_id=identifier)
-        self.assertEqual(operation["state"], "awaiting_confirmation")
-        self.assertEqual(self.slot()["state"], "maintenance")
+        self.assertEqual(operation["state"], "completed")
+        self.assertEqual(self.slot()["state"], "reserved")
 
     def test_confirmation_waits_while_a_different_compartment_is_actively_pulsing(self):
+        self.driver.pulse.side_effect = RuntimeError("fixture failure")
         first, _ = self.manual_open()
+        self.driver.pulse.side_effect = None
         other = lockers.LockerStore(self.connect, self.directory.name, self.driver)
         def during_pulse(_compartment):
             self.assert_error(409, other.manual_confirm, first["id"])
         self.driver.pulse.side_effect = during_pulse
         second, _ = self.manual_open("02")
-        self.assertEqual(second["state"], "awaiting_confirmation")
+        self.assertEqual(second["state"], "completed")
         self.assertEqual(self.slot()["state"], "maintenance")
         self.assertEqual(self.store.manual_confirm(first["id"])["state"], "completed")
 
-    def test_simultaneous_manual_and_visitor_start_never_share_the_reserved_slot(self):
+    def test_visitor_waits_for_manual_pulse_then_can_use_restored_free_slot(self):
         entered, release = threading.Event(), threading.Event()
         def during_pulse(compartment):
             if compartment == "01":
@@ -167,9 +179,11 @@ class ManualLockerTests(unittest.TestCase):
             manual = pool.submit(self.manual_open)
             self.assertTrue(entered.wait(2))
             visitor = pool.submit(self.visitor_start)
+            self.assertFalse(visitor.done())
+            self.assertEqual(self.slot()["state"], "maintenance")
             release.set()
-            self.assertEqual(manual.result(3)[0]["state"], "awaiting_confirmation")
-            self.assertEqual(visitor.result(3)["compartment_id"], "02")
+            self.assertEqual(manual.result(3)[0]["state"], "completed")
+            self.assertEqual(visitor.result(3)["compartment_id"], "01")
 
     def test_manual_waits_for_visitor_pulse_before_reopening_and_preserves_its_operation(self):
         entered, release = threading.Event(), threading.Event()
@@ -187,10 +201,8 @@ class ManualLockerTests(unittest.TestCase):
             release.set()
             visitor = visitor_future.result(3)
             manual = manual_future.result(3)[0]
-        self.assertEqual(manual["state"], "awaiting_confirmation")
+        self.assertEqual(manual["state"], "completed")
         self.assertEqual(self.store.get(visitor["id"])["state"], "awaiting_confirmation")
-        self.assert_error(409, self.store.finish, visitor["id"])
-        self.store.manual_confirm(manual["id"])
         self.assertEqual(self.store.finish(visitor["id"])["state"], "completed")
         self.assertEqual(calls, ["01", "01"])
 
@@ -212,7 +224,7 @@ class ManualLockerTests(unittest.TestCase):
     def test_post_pulse_write_failure_and_later_recovery_stay_in_maintenance(self):
         db = self.connect()
         db.execute("CREATE TRIGGER reject_manual_update BEFORE UPDATE OF state ON manual_openings "
-                   "WHEN NEW.state IN ('awaiting_confirmation','uncertain') "
+                   "WHEN NEW.state IN ('completed','uncertain') "
                    "BEGIN SELECT RAISE(FAIL,'injected failure'); END")
         db.close()
         identifier = str(uuid.uuid4())
@@ -233,29 +245,65 @@ class ManualLockerTests(unittest.TestCase):
         self.assertEqual(operation["state"], "uncertain")
         self.assertNotIn("private", json.dumps(operation))
         self.assertEqual(self.slot()["state"], "maintenance")
+        self.assert_error(409, self.manual_open)
+        self.assertTrue(self.manual_open(request_id=operation["id"])[1])
         self.store.manual_confirm(operation["id"])
         self.assertEqual(self.slot()["state"], "free")
+        self.driver.pulse.assert_called_once_with("01")
 
     def test_post_pulse_write_failure_marks_uncertain_immediately_when_database_allows(self):
         db = self.connect()
         db.execute("CREATE TRIGGER reject_manual_confirmation BEFORE UPDATE OF state ON manual_openings "
-                   "WHEN NEW.state='awaiting_confirmation' BEGIN SELECT RAISE(FAIL,'injected failure'); END")
+                   "WHEN NEW.state='completed' BEGIN SELECT RAISE(FAIL,'injected failure'); END")
         db.close()
         operation, _ = self.manual_open()
         self.assertEqual(operation["state"], "uncertain")
         self.assertEqual(self.slot()["state"], "maintenance")
         self.driver.pulse.assert_called_once_with("01")
 
+    def test_legacy_pending_confirmation_restores_saved_state_without_replaying(self):
+        visitor = self.visitor_start()
+        self.driver.pulse.side_effect = RuntimeError("fixture failure")
+        operation, _ = self.manual_open()
+        db = self.connect()
+        with db:
+            db.execute("UPDATE manual_openings SET state='awaiting_confirmation',error=NULL WHERE id=?",
+                       (operation["id"],))
+        db.close()
+        restarted = lockers.LockerStore(self.connect, self.directory.name, self.driver)
+        self.assertEqual(restarted.manual_get(operation["id"])["state"], "awaiting_confirmation")
+        self.assertTrue(restarted.manual_open(operation["id"], "01", operation["reason"])[1])
+        self.assertEqual(restarted.manual_confirm(operation["id"])["state"], "completed")
+        self.assertEqual(self.slot()["state"], "reserved")
+        self.assertEqual(restarted.get(visitor["id"])["state"], "awaiting_confirmation")
+        self.assertEqual(self.driver.pulse.call_count, 2)
+
+    def test_changed_inventory_during_pulse_keeps_manual_command_unresolved(self):
+        visitor = self.visitor_start()
+        self.store.finish(visitor["id"])
+        def change_inventory(_compartment):
+            db = self.connect()
+            with db:
+                db.execute("UPDATE item_storage SET status='collected' WHERE item_id=?", (visitor["item_id"],))
+            db.close()
+        self.driver.pulse.side_effect = change_inventory
+        operation, _ = self.manual_open()
+        self.assertEqual(operation["state"], "uncertain")
+        self.assertEqual(self.slot()["state"], "maintenance")
+        self.assert_error(409, self.store.manual_confirm, operation["id"])
+        self.assertEqual(self.driver.pulse.call_count, 2)
+
     def test_manual_and_visitor_openings_share_persistent_cooldown(self):
         self.driver.cooldown_seconds = 30
         operation, _ = self.manual_open()
-        self.store.manual_confirm(operation["id"])
+        self.assertEqual(operation["state"], "completed")
+        self.assert_error(429, self.manual_open)
         visitor = self.visitor_start()
         self.assertEqual(visitor["compartment_id"], "02")
         self.assert_error(429, self.manual_open, "02")
         self.assertEqual(self.driver.pulse.call_count, 2)
 
-    def test_search_excludes_maintenance_and_restores_inventory_after_confirmation(self):
+    def test_search_excludes_active_pulse_and_restores_inventory_without_confirmation(self):
         with tempfile.TemporaryDirectory() as directory:
             server = server_tests.server_module.build_server("127.0.0.1", 0, directory,
                                                              auto_recognize=False, locker_driver=self.driver)
@@ -272,9 +320,10 @@ class ManualLockerTests(unittest.TestCase):
                 server.lockers.finish(visitor["id"])
                 with patch.object(search, "find_matches", return_value=[{"id": 1, "reason": "Keys."}]):
                     self.assertEqual(server.search_items("keys")["searched_count"], 1)
+                    self.driver.pulse.side_effect = lambda _slot: self.assertEqual(
+                        server.search_items("keys")["matches"], [])
                     manual, _ = server.lockers.manual_open(str(uuid.uuid4()), "01", "check")
-                    self.assertEqual(server.search_items("keys")["matches"], [])
-                    server.lockers.manual_confirm(manual["id"])
+                    self.assertEqual(manual["state"], "completed")
                     result = server.search_items("keys")
                     self.assertEqual(result["matches"][0]["item"]["id"], item)
                     self.assertEqual(result["matches"][0]["item"]["status"], "stored")
@@ -298,7 +347,7 @@ class ManualLockerTests(unittest.TestCase):
         self.driver.pulse.assert_not_called()
 
     def test_validation_rejects_invalid_reason_ids_and_unknown_operations(self):
-        for reason in (None, 4, [], "", "  ", "x" * 201, "\ud800"):
+        for reason in (None, 4, [], "x" * 201, "\ud800"):
             self.assert_error(400, self.manual_open, "01", reason)
         for compartment in (None, 1, [], "1", "05"):
             self.assert_error(400, self.manual_open, compartment)
@@ -310,7 +359,7 @@ class ManualLockerTests(unittest.TestCase):
 
     def test_old_confirmation_cannot_release_a_new_maintenance_operation(self):
         first, _ = self.manual_open()
-        self.store.manual_confirm(first["id"])
+        self.driver.pulse.side_effect = RuntimeError("fixture failure")
         second, _ = self.manual_open()
         self.store.manual_confirm(first["id"])
         self.assertEqual(self.slot()["state"], "maintenance")
@@ -319,6 +368,7 @@ class ManualLockerTests(unittest.TestCase):
     def test_changed_slot_or_item_state_refuses_restore(self):
         visitor = self.visitor_start()
         self.store.finish(visitor["id"])
+        self.driver.pulse.side_effect = RuntimeError("fixture failure")
         operation, _ = self.manual_open()
         db = self.connect()
         with db:

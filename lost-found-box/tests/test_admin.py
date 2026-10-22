@@ -179,7 +179,7 @@ class AdminHTTPTests(unittest.TestCase):
         invalid = [dict(payload, extra=True), {"request_id": payload["request_id"]},
                    dict(payload, request_id="bad"), dict(payload, request_id=payload["request_id"].upper()),
                    dict(payload, compartment_id="05"), dict(payload, compartment_id=[]),
-                   dict(payload, reason=" "), dict(payload, reason="x" * 201), dict(payload, reason="\ud800")]
+                   dict(payload, reason=None), dict(payload, reason="x" * 201), dict(payload, reason="\ud800")]
         for value in invalid:
             self.assertEqual(self.post("/api/admin/manual-open", value)[0], 400)
         identifier = str(uuid.uuid4())
@@ -290,7 +290,7 @@ class AdminHTTPTests(unittest.TestCase):
         self.assertEqual(self.driver.pulses, before)
         self.assertEqual(self.server.ai_queue.qsize(), 0)
 
-    def test_manual_open_get_replay_and_confirm_preserve_stored_inventory(self):
+    def test_manual_open_completes_and_replay_preserves_stored_inventory(self):
         self.login()
         item = self.add_item()
         original = self.store_item(item)
@@ -300,20 +300,19 @@ class AdminHTTPTests(unittest.TestCase):
         self.assertFalse(body["duplicate"])
         operation = body["operation"]
         self.assertEqual(operation["id"], payload["request_id"])
-        self.assertEqual(operation["state"], "awaiting_confirmation")
+        self.assertEqual(operation["state"], "completed")
         self.assertEqual(operation["item_id"], item)
-        self.assertEqual(self.get("/api/items?available=1")[2]["total"], 0)
+        self.assertEqual(self.get("/api/items?available=1")[2]["total"], 1)
         overview = self.get("/api/admin/overview")[2]
-        self.assertEqual(overview["lockers"]["compartments"][0]["state"], "maintenance")
+        self.assertEqual(overview["lockers"]["compartments"][0]["state"], "occupied")
         self.assertEqual(overview["lockers"]["compartments"][0]["item"]["status"], "stored")
-        self.assertEqual(overview["manual_operations"][0]["id"], operation["id"])
+        self.assertEqual(overview["manual_operations"], [])
         self.assertEqual(self.get(f"/api/admin/manual-open/{operation['id']}")[2]["operation"], operation)
         status, _, replay = self.post("/api/admin/manual-open", payload)
         self.assertEqual(status, 200)
         self.assertTrue(replay["duplicate"])
         self.assertEqual(replay["operation"], operation)
         self.assertEqual(self.post("/api/admin/manual-open", dict(payload, reason="Different purpose"))[0], 409)
-        self.assertEqual(self.post("/api/admin/manual-open", self.manual_payload())[0], 409)
         path = f"/api/admin/manual-open/{operation['id']}/confirm"
         self.assertEqual(self.post(path)[2]["operation"]["state"], "completed")
         self.assertEqual(self.post(path)[0], 200)
@@ -328,13 +327,27 @@ class AdminHTTPTests(unittest.TestCase):
         payload = self.manual_payload("04")
         status, _, body = self.post("/api/admin/manual-open", payload)
         self.assertEqual(status, 201)
+        self.assertEqual(body["operation"]["state"], "completed")
         self.assertIsNone(body["operation"]["item_id"])
-        path = f"/api/admin/manual-open/{body['operation']['id']}/confirm"
-        self.assertEqual(self.post(path)[0], 200)
         self.assertEqual(self.get("/api/admin/items")[2]["total"], 0)
         slot = self.get("/api/lockers")[2]["compartments"][3]
         self.assertEqual(slot, {"id": "04", "state": "free", "item_id": None})
         self.assertEqual(self.driver.pulses, ["04"])
+
+    def test_manual_open_accepts_no_reason_and_empty_reason_replays_without_pulse(self):
+        self.login()
+        payload = {"request_id": str(uuid.uuid4()), "compartment_id": "02"}
+        status, _, body = self.post("/api/admin/manual-open", payload)
+        self.assertEqual(status, 201)
+        self.assertEqual(body["operation"]["state"], "completed")
+        self.assertEqual(body["operation"]["reason"], "Manual opening")
+        for replay_payload in (payload, dict(payload, reason=""), dict(payload, reason="  ")):
+            status, _, replay = self.post("/api/admin/manual-open", replay_payload)
+            self.assertEqual(status, 200)
+            self.assertTrue(replay["duplicate"])
+            self.assertEqual(replay["operation"], body["operation"])
+        self.assertEqual(self.get("/api/lockers")[2]["compartments"][1]["state"], "free")
+        self.assertEqual(self.driver.pulses, ["02"])
 
     def test_manual_confirmation_rejects_active_pulse_and_uncertain_response_is_safe(self):
         self.login()
