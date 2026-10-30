@@ -1,0 +1,248 @@
+{
+  "date": "2026-10-30",
+  "baseline": "0845eb3",
+  "server_files": [
+    {
+      "path": "lost-found-box/.gitignore",
+      "server_sha256": "bed92959927fc44f456505ad5a2d9bb421ecab1cb3fefce25f016a65f1a1dc69",
+      "repository_sha256": "bed92959927fc44f456505ad5a2d9bb421ecab1cb3fefce25f016a65f1a1dc69",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/README.md",
+      "server_sha256": "6acd1c1e0c997e2f821986e83c6edd66a3de921b7f711d17c8f0f1102f6d0e1d",
+      "repository_sha256": "a511b7177d1c0b2ff38dbc2e4406cf147b226ee8d566b89d93b4c362f03d716a",
+      "disposition": "retain newer Mac documentation"
+    },
+    {
+      "path": "lost-found-box/VERIFICATION.md",
+      "server_sha256": "2561d72523960ba25a5fb788654857a13de725b9d931e32744e23ad07797bff8",
+      "repository_sha256": "098fd857bffdb947b288c7dc11aba155cee68b5140f5cc7bff655e23f9dca6d9",
+      "disposition": "retain newer Mac documentation"
+    },
+    {
+      "path": "lost-found-box/deploy/lockers.env.example",
+      "server_sha256": "d506f5b0d4ac9feea12dd40230b23cf2ace5e8e40022a0bba56d3fcc3858ee8d",
+      "repository_sha256": "d506f5b0d4ac9feea12dd40230b23cf2ace5e8e40022a0bba56d3fcc3858ee8d",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/deploy/lost-found-box.service",
+      "server_sha256": "50cece34d82f277d58bb727093349713b70628e3a95f12987472081f6e93373a",
+      "repository_sha256": "50cece34d82f277d58bb727093349713b70628e3a95f12987472081f6e93373a",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/deploy/lost-found-setup.service",
+      "server_sha256": "571d98561333b59ab8ae9e188ad5d7af06a3dc299dc96ecac80d713c4a74c23c",
+      "repository_sha256": "571d98561333b59ab8ae9e188ad5d7af06a3dc299dc96ecac80d713c4a74c23c",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/door_feedback.py",
+      "server_sha256": "91064a2b37d83cb45190e921e1113a82a119da535a6a148fe20fdbd293dc938e",
+      "repository_sha256": "91064a2b37d83cb45190e921e1113a82a119da535a6a148fe20fdbd293dc938e",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/iot_admin.py",
+      "server_sha256": "df3590b598af0be204044bb18ae0dbe80d11594b183f911842ace3417f6a05aa",
+      "repository_sha256": "df3590b598af0be204044bb18ae0dbe80d11594b183f911842ace3417f6a05aa",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/lockers.py",
+      "server_sha256": "ac0d25884aa351bad881c4999aa2824e04a4c5d4a1be4b2c9708a1d68aa0ae8a",
+      "repository_sha256": "ac0d25884aa351bad881c4999aa2824e04a4c5d4a1be4b2c9708a1d68aa0ae8a",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/search.py",
+      "server_sha256": "c8fad45eaad36865e28cbd8a069ed55a25f5d2f24c1456a924d1f4cd6a4c44ec",
+      "repository_sha256": "c8fad45eaad36865e28cbd8a069ed55a25f5d2f24c1456a924d1f4cd6a4c44ec",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/server.py",
+      "server_sha256": "af00b11cc10e345ff28732b96758595df3a19bba2fff1b045d30f7446d5d252d",
+      "repository_sha256": "af00b11cc10e345ff28732b96758595df3a19bba2fff1b045d30f7446d5d252d",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/speech.py",
+      "server_sha256": "f55650fb84311604988464851254591fa7c5a6f9bec6351320e251267b0410eb",
+      "repository_sha256": "f55650fb84311604988464851254591fa7c5a6f9bec6351320e251267b0410eb",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/static/admin.css",
+      "server_sha256": "a954c7976d5468d70c40db58f7b230fdaeffff95baaa8e9c999950be740f58dc",
+      "repository_sha256": "a954c7976d5468d70c40db58f7b230fdaeffff95baaa8e9c999950be740f58dc",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/static/admin.html",
+      "server_sha256": "11d1a0960112655ffa1cc807fae1953dd12b4b3ca65fa6793ee3daeeddaa704c",
+      "repository_sha256": "11d1a0960112655ffa1cc807fae1953dd12b4b3ca65fa6793ee3daeeddaa704c",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/static/admin.js",
+      "server_sha256": "50d2fc6ef08349b14e513d53fee743893352217e12f4ab9e1c9e002e14f58d26",
+      "repository_sha256": "50d2fc6ef08349b14e513d53fee743893352217e12f4ab9e1c9e002e14f58d26",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/static/app.js",
+      "server_sha256": "abc9ccebd9cf2e2cd052de61bd12f30d866d8d409141ac9c805c75dc89c32c9e",
+      "repository_sha256": "abc9ccebd9cf2e2cd052de61bd12f30d866d8d409141ac9c805c75dc89c32c9e",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/static/index.html",
+      "server_sha256": "43eb0994c34bd3196709d92b457cc36f1f1c8d38c027ac1ba84d495484607be4",
+      "repository_sha256": "43eb0994c34bd3196709d92b457cc36f1f1c8d38c027ac1ba84d495484607be4",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/static/style.css",
+      "server_sha256": "7e357dbea8c31cfedf3063263070edb825d8fe8d90dd6746c5e47dbcc4cd8611",
+      "repository_sha256": "7e357dbea8c31cfedf3063263070edb825d8fe8d90dd6746c5e47dbcc4cd8611",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_admin.py",
+      "server_sha256": "7849dae31800f194e63aed5d049f78e09de7091cd03bbcce0818840b7612e76a",
+      "repository_sha256": "7849dae31800f194e63aed5d049f78e09de7091cd03bbcce0818840b7612e76a",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_camera.js",
+      "server_sha256": "4e6d8739006bae267c0897668fb15ef25bfcc18f142f16f2524195291ea8c38d",
+      "repository_sha256": "4e6d8739006bae267c0897668fb15ef25bfcc18f142f16f2524195291ea8c38d",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_door_feedback.py",
+      "server_sha256": "bd2959d11740aaf0b2426a0a1a3acf8be0265a003fb0ce6ddd7fb94a27061f45",
+      "repository_sha256": "bd2959d11740aaf0b2426a0a1a3acf8be0265a003fb0ce6ddd7fb94a27061f45",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_door_feedback_http.py",
+      "server_sha256": "12f7e5401a326f8d5ec610918fa73e3683f0c9163fb47fbda395242126d8a382",
+      "repository_sha256": "12f7e5401a326f8d5ec610918fa73e3683f0c9163fb47fbda395242126d8a382",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_lock_once.py",
+      "server_sha256": "38bf9655010a907923490989d277a8133236040a84adbcc1a269bb0ad1b446a8",
+      "repository_sha256": "38bf9655010a907923490989d277a8133236040a84adbcc1a269bb0ad1b446a8",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_lockers.py",
+      "server_sha256": "239d58cc4468925ccd728e0ce529b4708faa3926b4f9b85b28647f971116ed9f",
+      "repository_sha256": "239d58cc4468925ccd728e0ce529b4708faa3926b4f9b85b28647f971116ed9f",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_manual_lockers.py",
+      "server_sha256": "9d901c898cfaa83e6f4de3ce6bdb45efbfcedec6754f2f576b7b58599f44f112",
+      "repository_sha256": "9d901c898cfaa83e6f4de3ce6bdb45efbfcedec6754f2f576b7b58599f44f112",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_search.py",
+      "server_sha256": "cab911e8d24a024110bcd478d837eab3e732b6749cd25f5f13146c573f5a881c",
+      "repository_sha256": "cab911e8d24a024110bcd478d837eab3e732b6749cd25f5f13146c573f5a881c",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_server.py",
+      "server_sha256": "2082ed73653af66d374dbc1e665db53c5ee6354faf5aae3fdca1e4ca27a8bdb9",
+      "repository_sha256": "2082ed73653af66d374dbc1e665db53c5ee6354faf5aae3fdca1e4ca27a8bdb9",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_speech.py",
+      "server_sha256": "fbf21bc29273c32af808a96821b35a47b42ae20d9849af8dfd47c1296d7389b1",
+      "repository_sha256": "fbf21bc29273c32af808a96821b35a47b42ae20d9849af8dfd47c1296d7389b1",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_vibration.py",
+      "server_sha256": "37b3b7d58af013f6a71b6d10aeb6529bcd2619fa33c0ff2674627fd73e06f47c",
+      "repository_sha256": "37b3b7d58af013f6a71b6d10aeb6529bcd2619fa33c0ff2674627fd73e06f47c",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_vibration_http.py",
+      "server_sha256": "ecffa9c06452fdb50fe30917e1245bb613ae42032a5573cf52326636c64eb3c8",
+      "repository_sha256": "ecffa9c06452fdb50fe30917e1245bb613ae42032a5573cf52326636c64eb3c8",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_vibration_lifecycle.py",
+      "server_sha256": "5b59bb1e8c5f6d0aec541e9748214bd163d618c18f1abf73224668e77f1c5605",
+      "repository_sha256": "5b59bb1e8c5f6d0aec541e9748214bd163d618c18f1abf73224668e77f1c5605",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tests/test_vision.py",
+      "server_sha256": "bd1c8f8f053cc8eb0f893b51e14e5cc108adfdd90ea598e362427b60764d6701",
+      "repository_sha256": "bd1c8f8f053cc8eb0f893b51e14e5cc108adfdd90ea598e362427b60764d6701",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tools/certificate_portal.py",
+      "server_sha256": "e8a8effc87869a4cc14d47b07ab6442d4f177a919b1d06dff4af0ce30a165166",
+      "repository_sha256": "e8a8effc87869a4cc14d47b07ab6442d4f177a919b1d06dff4af0ce30a165166",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tools/configure_admin.py",
+      "server_sha256": "78534de56309f4e218e77607764df0ad0d6ec21c405249317cad808cd0a22d6e",
+      "repository_sha256": "78534de56309f4e218e77607764df0ad0d6ec21c405249317cad808cd0a22d6e",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tools/configure_ai.py",
+      "server_sha256": "de25ad7f2ee4e7863d961ee7854cb33c470bce73bb5ac6c646592946ed3f1f66",
+      "repository_sha256": "de25ad7f2ee4e7863d961ee7854cb33c470bce73bb5ac6c646592946ed3f1f66",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tools/control_lock_gpio.py",
+      "server_sha256": "9a9f4d8ef123b406421d42fb1712d0212c59448cbf2b1f6db43804bfd6051631",
+      "repository_sha256": "9a9f4d8ef123b406421d42fb1712d0212c59448cbf2b1f6db43804bfd6051631",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tools/make_tls.py",
+      "server_sha256": "3e31ed7c49e17f939f8b036e16e5b004bc311e5aa5cf8c10b90057e8bf994388",
+      "repository_sha256": "3e31ed7c49e17f939f8b036e16e5b004bc311e5aa5cf8c10b90057e8bf994388",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/tools/test_lock_once.py",
+      "server_sha256": "d610ca64c487daa07fcb4ff3db2a07fb4067b77b3a26779499698c41579cfb97",
+      "repository_sha256": "d610ca64c487daa07fcb4ff3db2a07fb4067b77b3a26779499698c41579cfb97",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/vibration.py",
+      "server_sha256": "f4bb2893d85798358b5df60e6e6560972cf58f1f5abed801a6392bdb2768020a",
+      "repository_sha256": "f4bb2893d85798358b5df60e6e6560972cf58f1f5abed801a6392bdb2768020a",
+      "disposition": "identical"
+    },
+    {
+      "path": "lost-found-box/vision.py",
+      "server_sha256": "707d9bf62817e21e2d7b8c634aac7981f4eef61134ad36c50a61e182e150733f",
+      "repository_sha256": "707d9bf62817e21e2d7b8c634aac7981f4eef61134ad36c50a61e182e150733f",
+      "disposition": "identical"
+    }
+  ],
+  "live_config_and_data_copied": false,
+  "server_modified": false
+}

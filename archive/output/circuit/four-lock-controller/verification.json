@@ -1,0 +1,10 @@
+{
+  "pages": 5,
+  "page_bounds": "pass",
+  "required_signal_labels": "pass",
+  "boot_reset_acceptance": "zero pulses",
+  "trigger_acceptance": "one 0.4–1.0 second pulse",
+  "independent_document_review": "completed; corrections applied",
+  "hardware_tested": false,
+  "pdf_sha256": "cdaee56cf90107522486153b6e9f2e831c3dfb8a32b14f8454992cdbc145729f"
+}

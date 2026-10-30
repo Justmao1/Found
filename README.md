@@ -10,6 +10,10 @@
 
 本仓库包含原生 App、Xcode 工程、Python 后端及双方测试。后端位于 [`lost-found-box/`](lost-found-box/README.md)，包含原有网页、视觉识别、自然语言搜索、语音转写、隔间分配与门锁控制、配置工具及 systemd 服务示例。接口和状态约定见 [四格储存流程](docs/locker-flow.md)。API 密钥、证书、数据库、物品照片、备份和本机运行记录不纳入版本管理。
 
+## 源码交付与同步
+
+GitHub：[Justmao1/Found](https://github.com/Justmao1/Found)。2026-10-30 已核对 Mac、树莓派与旧工作区副本，保留完整原生客户端、当前后端及测试，并补齐服务器诊断脚本和历史设计源码。来源、版本取舍及复现结果见[源码整理记录](docs/source-sync-2026-10-30.md)。历史源码位于 `archive/`，不能作为当前接线或部署配置。
+
 ## 打开与运行
 
 1. 用 Xcode 打开 `Lost&Found.xcodeproj`，选择 `Lost&Found` scheme。
